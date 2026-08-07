@@ -438,22 +438,38 @@ class TriageTagDetector:
         )
 
         if bc_text and printed:
-            ratio = difflib.SequenceMatcher(None, bc_text.upper(), printed.upper()).ratio()
-            if ratio >= 0.80:
+            # Confirmation requires an EXACT match, not a high similarity.
+            # Patient IDs are sequential vendor serials, so the single most
+            # likely barcode misread -- one digit off -- yields a near-identical
+            # string: EA1568513 against EA1568512 scores 0.89. A similarity
+            # threshold loose enough to absorb OCR noise would therefore bless
+            # exactly the error this check exists to catch.
+            a = self._normalize_id(bc_text)
+            b = self._normalize_id(printed)
+            if a == b:
                 return bc_text, warns, "agree"
-            if abs(len(printed) - len(bc_text)) > 3:
-                # The OCR produced something structurally unlike an ID at all --
-                # a 21-character smear off a blurred line. That is a failed read,
-                # not evidence against the barcode, and reporting it as a
-                # mismatch would send an operator chasing a healthy tag.
-                return bc_text, warns, "none"
-            warns.append(
-                f"barcode says {bc_text!r} but the printed id reads {printed!r} "
-                f"(similarity {ratio:.2f}); barcode kept -- verify this tag"
-            )
-            return bc_text, warns, "disagree"
+
+            ratio = difflib.SequenceMatcher(None, a, b).ratio()
+            if ratio < 0.50:
+                # Two genuinely different strings. Could be a barcode misread or
+                # the ID line of a neighbouring tag caught in the crop; either
+                # way a human needs to look.
+                warns.append(
+                    f"barcode says {bc_text!r} but the printed id reads "
+                    f"{printed!r} (similarity {ratio:.2f}); barcode kept -- "
+                    "verify this tag"
+                )
+                return bc_text, warns, "disagree"
+
+            # Close but not identical: almost always OCR noise on the printed
+            # line rather than a bad decode, so this is not evidence against the
+            # barcode -- but it is not confirmation either, and saying so beats
+            # a false alarm that teaches operators to ignore the warnings.
+            self._warn_unverified(cand, warns)
+            return bc_text, warns, "none"
 
         if bc_text:
+            self._warn_unverified(cand, warns)
             return bc_text, warns, "none"
 
         if printed:
@@ -465,6 +481,33 @@ class TriageTagDetector:
 
         warns.append("no readable barcode and no readable printed id")
         return None, warns, "none"
+
+    @staticmethod
+    def _normalize_id(text: str) -> str:
+        """Case- and punctuation-insensitive form, for comparison only."""
+        return "".join(ch for ch in text.upper() if ch.isalnum())
+
+    @staticmethod
+    def _warn_unverified(cand: _Candidate, warns: list[str]) -> None:
+        """Flag a patient ID that nothing independently corroborated.
+
+        Patient IDs are vendor pre-printed serials in an unknown format, so the
+        ID pattern must stay permissive and cannot reject a bad decode on shape.
+        With a symbology that has no mandatory check character -- Code 39, which
+        is what this stock uses -- that leaves the printed ID line as the only
+        confirmation. When it could not be read, the ID rests on a single
+        unverified decode, and the operator should be told rather than left to
+        assume it was cross-checked.
+        """
+        if cand.barcode is None:
+            return
+        if barcode_mod.is_self_checking(cand.barcode.format):
+            return
+        warns.append(
+            f"patient id came from a single {cand.barcode.format} decode with no "
+            "check character, and the printed id line could not be read to "
+            "confirm it; treat the id as unverified"
+        )
 
     def _read_printed_id(
         self,

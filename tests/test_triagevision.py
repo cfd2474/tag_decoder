@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 
 from triagevision import Acuity, DetectorConfig, TriageTagDetector
-from triagevision.barcode import _close, _merge
+from triagevision.barcode import _close, _merge, is_self_checking
 from triagevision.config import DEFAULT_TEXT_KEYWORDS
 from triagevision.geometry import (
     normalize_landscape,
@@ -326,6 +326,90 @@ def test_id_pattern_rejects_junk():
     assert cfg.is_valid_patient_id("EA1568511")
     assert not cfg.is_valid_patient_id("A")
     assert not cfg.is_valid_patient_id("")
+
+
+@pytest.mark.parametrize(
+    "serial",
+    ["EA1568511", "SN1050837", "0001", "X-99-ABC", "TRIAGE/2026/0042", "9812734650"],
+)
+def test_id_pattern_accepts_unknown_vendor_serials(serial):
+    """IDs are pre-printed vendor serials, so the next batch's format is not
+    knowable. A pattern fitted to today's stock would silently drop every
+    patient in a batch that looks different.
+    """
+    assert DetectorConfig().is_valid_patient_id(serial)
+
+
+def _id_case(payload, printed):
+    """Run the barcode/printed-ID reconciliation with a preset OCR result."""
+    from triagevision.detector import _Candidate, _Oriented
+
+    det = _detector()
+    cand = _Candidate(
+        bbox=BBox(0, 0, 100, 50),
+        barcode=BarcodeRead(text=payload, format="Code 39", bbox=BBox(0, 0, 80, 20)),
+    )
+    oriented = _Oriented(crop=np.zeros((10, 10, 3), np.uint8), printed_id=printed)
+    return det._resolve_id(cand, oriented)
+
+
+def test_printed_id_confirms_only_on_exact_match():
+    _, _, cross = _id_case("EA1568513", "EA1568513")
+    assert cross == "agree"
+
+
+def test_one_digit_off_serial_is_never_treated_as_confirmation():
+    """The safety property that matters most here.
+
+    Patient IDs are sequential vendor serials, so the likeliest barcode misread
+    is one digit -- and EA1568513 vs EA1568512 scores 0.89 similarity. Any
+    threshold loose enough to absorb OCR noise would bless exactly the error
+    this cross-check exists to catch, so confirmation demands an exact match.
+    """
+    _, warns, cross = _id_case("EA1568513", "EA1568512")
+    assert cross != "agree"
+    assert any("unverified" in w for w in warns)
+
+
+def test_ocr_noise_on_printed_line_is_not_a_false_alarm():
+    """A garbled printed read is not evidence against the barcode. Crying
+    mismatch here trains operators to ignore the warnings that do matter.
+    """
+    _, warns, cross = _id_case("EA1568513", "11568575")
+    assert cross == "none"
+    assert not any("verify this tag" in w for w in warns)
+
+
+def test_genuinely_different_string_is_flagged():
+    _, warns, cross = _id_case("EA1568513", "ZZ9990001")
+    assert cross == "disagree"
+    assert any("verify this tag" in w for w in warns)
+
+
+def test_unverified_warning_only_for_non_self_checking_symbologies():
+    from triagevision.detector import _Candidate, _Oriented
+
+    det = _detector()
+    oriented = _Oriented(crop=np.zeros((10, 10, 3), np.uint8), printed_id=None)
+    for fmt, expect_warning in (("Code 39", True), ("Code 128", False)):
+        cand = _Candidate(
+            bbox=BBox(0, 0, 100, 50),
+            barcode=BarcodeRead(text="EA1", format=fmt, bbox=BBox(0, 0, 80, 20)),
+        )
+        _, warns, _ = det._resolve_id(cand, oriented)
+        assert any("unverified" in w for w in warns) is expect_warning
+
+
+@pytest.mark.parametrize(
+    "fmt,expected",
+    [("Code 39", False), ("Codabar", False), ("ITF", False),
+     ("Code 128", True), ("QRCode", True), ("DataMatrix", True), ("Code93", True)],
+)
+def test_self_checking_format_detection(fmt, expected):
+    """Code 39's check digit is optional and this stock omits it, so a clean
+    decode is NOT evidence the payload is right.
+    """
+    assert is_self_checking(fmt) is expected
 
 
 def test_detect_on_blank_image_returns_nothing():

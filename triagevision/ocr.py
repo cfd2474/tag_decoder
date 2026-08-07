@@ -109,10 +109,14 @@ class TesseractReader:
         if not self.available or crop is None or crop.size == 0:
             return []
         tokens: list[str] = []
-        # Two calls only: both polarities under the single-line mode. This is a
-        # cross-check, not the primary read, so it does not get a large budget.
+        # Both polarities, in single-line AND block mode. Block mode matters:
+        # the ID band inevitably catches part of the banner above and the
+        # barcode below, and single-line mode cannot parse three competing rows
+        # -- restricting to it drops the match rate from 4/5 to 2/5 on a real
+        # sheet. This is the only independent check on a patient ID when the
+        # symbology has no check character, so it is worth the extra ~0.3s.
         for prepped in list(preprocess_variants(crop))[:2]:
-            for psm in (7,):
+            for psm in (7, 6):
                 try:
                     raw = self._pt.image_to_string(
                         prepped, lang=self.lang,

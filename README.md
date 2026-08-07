@@ -242,13 +242,41 @@ changing for a different tag stock:
 
 | Field | Default | Meaning |
 |---|---|---|
-| `patient_id_pattern` | permissive alphanumeric | Tighten to your own ID scheme — it is what rejects a garbage decode. |
+| `patient_id_pattern` | permissive alphanumeric | Keep it loose unless you genuinely control the ID format — see below. |
 | `text_keywords` | START/SALT vocabulary | Add local wording (e.g. `MINIMAL`, `WALKING WOUNDED`). |
 | `tag_width_per_barcode_width` | `1.45` | Tag width as a multiple of symbol width. |
 | `tag_aspect_prior` | `2.25` | Tag width ÷ height. |
 | `barcode_offset_frac` | `0.17` | How far the symbol sits below tag centre. |
 | `require_text` | `False` | Never infer acuity from colour. |
 | `use_color` | `False` | Enable colour segmentation. |
+
+**On `patient_id_pattern`:** it is tempting to tighten this to your observed IDs,
+and it is usually wrong. Patient numbers are pre-printed vendor serials, so the
+format of the next batch is not knowable — a pattern fitted to today's stock
+silently drops every patient in a batch that looks different, and it fails
+closed in the worst way: quietly, on real casualties.
+
+That has a consequence. With a permissive pattern, shape cannot reject a bad
+decode, and Code 39 — the symbology on this stock — has only an *optional* check
+digit, which these tags do not carry. So a misread can decode cleanly to a wrong
+string with nothing structural to catch it. The **printed ID line is the only
+real guard**.
+
+It is therefore treated strictly. Confirmation requires the printed line to match
+the payload **exactly**, not merely closely: serials are sequential, so the
+likeliest misread is one digit — and `EA1568513` against `EA1568512` scores 0.89
+similarity. Any threshold loose enough to tolerate OCR noise would bless exactly
+the error the check exists to catch. Three outcomes:
+
+| Printed line | Meaning | Effect |
+|---|---|---|
+| exact match | confirmed | `+0.05` confidence |
+| close but not identical | OCR noise, not evidence either way | flagged `treat the id as unverified` |
+| clearly different (<0.50) | possible misread, or a neighbour's line in the crop | flagged `verify this tag`, `−0.20` |
+
+Unreadable printed line, on a symbology with no check character, also flags
+`treat the id as unverified`. Do not disable OCR and then trust IDs blindly, and
+do not filter these warnings out of your downstream feed.
 
 The three geometry priors are measured from standard START-scheme tags. To
 re-measure for different stock, decode one sheet and compare each symbol's width

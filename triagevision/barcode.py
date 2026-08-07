@@ -37,6 +37,29 @@ DEFAULT_FORMATS = zxingcpp.BarcodeFormats(
 )
 
 
+# Symbologies that carry a mandatory check character or error correction, so a
+# clean decode is itself strong evidence the payload is right. Code 39, ITF and
+# Codabar are absent on purpose: their check digits are OPTIONAL, and the tag
+# stock here prints Code 39 without one, so a misread can decode cleanly to the
+# wrong string. That is why the printed ID line is cross-checked.
+SELF_CHECKING_FORMATS = frozenset(
+    {
+        "code128", "code93", "code32", "pzn",
+        "qrcode", "microqrcode", "qrcodemodel1", "qrcodemodel2", "rmqrcode",
+        "datamatrix", "pdf417", "micropdf417", "compactpdf417",
+        "aztec", "azteccode",
+        "ean13", "ean8", "upca", "upce", "isbn",
+        "databar", "databarexp", "databarltd", "databaromni",
+    }
+)
+
+
+def is_self_checking(format_name: str) -> bool:
+    """True if a clean decode of this symbology implies a verified payload."""
+    key = "".join(ch for ch in (format_name or "").lower() if ch.isalnum())
+    return key in SELF_CHECKING_FORMATS
+
+
 def _position_to_quad(pos) -> list[list[int]]:
     pts = []
     for name in ("top_left", "top_right", "bottom_right", "bottom_left"):
