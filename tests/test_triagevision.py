@@ -311,11 +311,39 @@ def test_overlapping_duplicates_collapse_to_best():
     assert kept[0].confidence == 0.95
 
 
-def test_distant_duplicates_are_kept_and_flagged():
-    tags = [_tag("EA1", 0, 0), _tag("EA1", 900, 900)]
-    kept = TriageTagDetector._merge_same_tag(tags)
-    assert len(kept) == 2
-    assert TriageTagDetector._duplicate_ids(kept) == {"EA1"}
+def test_two_tags_sharing_an_id_are_both_reported():
+    """Duplicate patient IDs are reported, not reconciled.
+
+    Two physical tags carrying the same ID become two line items, exactly as
+    they would with different IDs -- whether or not their acuities agree.
+    Deciding what a duplicate means belongs to the consuming system; hiding one
+    here would conceal a tag that physically exists.
+    """
+    from triagevision.types import DetectionResult
+
+    for second_acuity in (Acuity.IMMEDIATE, Acuity.DELAYED):
+        a = _tag("EA1", 0, 0)
+        b = _tag("EA1", 900, 900)
+        b.acuity = second_acuity
+        kept = TriageTagDetector._merge_same_tag([a, b])
+        assert len(kept) == 2
+
+        result = DetectionResult(tags=kept, image_size=(10, 10), elapsed_ms=0.0)
+        assert result.tag_count == 2
+        assert len(result.roster()) == 2
+        assert [r["patient_id"] for r in result.roster()] == ["EA1", "EA1"]
+        assert result.warnings == []
+
+
+def test_counts_report_line_items_and_identified():
+    from triagevision.types import DetectionResult
+
+    tags = [_tag("EA1", 0, 0), _tag("EA2", 900, 900), _tag(None, 400, 400)]
+    result = DetectionResult(tags=tags, image_size=(10, 10), elapsed_ms=0.0)
+    assert result.tag_count == 3
+    assert result.identified_count == 2
+    assert result.to_dict()["count"] == 3
+    assert result.to_dict()["identified_count"] == 2
 
 
 # ----------------------------------------------------------------- config/IO

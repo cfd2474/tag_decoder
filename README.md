@@ -137,11 +137,36 @@ and `MORGUE` share the black field and are separated only by the word.
     "warnings": []
   }],
   "count": 1,
+  "identified_count": 1,
   "image_size": {"width": 3000, "height": 4000},
   "elapsed_ms": 5412.7,
   "warnings": []
 }
 ```
+
+- `count` — line items returned, one per physical tag read (`result.tag_count`)
+- `identified_count` — how many of those yielded a patient ID (`result.identified_count`)
+
+### Duplicate patient IDs are reported, not reconciled
+
+One entry per physical tag, always. If the same patient ID appears on two tags,
+both are returned as separate line items — exactly as they would be with
+different IDs, and **whether or not their acuities agree**:
+
+```python
+detector.detect("two_tags_one_id.jpg").roster()
+# [{'patient_id': 'SN1050837', 'acuity': 'EXPECTANT'},
+#  {'patient_id': 'SN1050837', 'acuity': 'DEAD'}]
+```
+
+No warning is raised and nothing is collapsed. Deciding what a duplicate means —
+a re-tag, a misread, a vendor batch collision — belongs to the consuming system,
+which has context this one does not. Hiding a tag here would conceal something
+that physically exists.
+
+The one thing that *is* de-duplicated is a single physical tag detected twice
+(same ID **and** overlapping geometry), since counting one piece of card as two
+patients would corrupt `count`.
 
 `confidence` is interpretable, not a model score:
 

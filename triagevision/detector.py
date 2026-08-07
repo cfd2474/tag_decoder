@@ -144,13 +144,6 @@ class TriageTagDetector:
         tags = self._merge_same_tag(tags)
         tags.sort(key=lambda t: (t.bbox.cy, t.bbox.cx))
 
-        dupes = self._duplicate_ids(tags)
-        if dupes:
-            warnings.append(
-                f"same patient id on more than one tag: {sorted(dupes)} -- "
-                "possible barcode misread or a genuine duplicate; resolve manually"
-            )
-
         return DetectionResult(
             tags=tags,
             image_size=(w, h),
@@ -760,14 +753,19 @@ class TriageTagDetector:
 
     @staticmethod
     def _merge_same_tag(tags: list[TagDetection]) -> list[TagDetection]:
-        """Collapse detections of one physical tag, keeping the best read.
+        """Collapse repeat detections of ONE physical tag, keeping the best read.
 
-        A tag can reach this point twice -- once from its color region and once
-        from a second-chance decode inside a neighbour's crop, say. Same ID plus
-        overlapping geometry means one patient, so the weaker read is dropped.
-        Same ID at a DIFFERENT place in the frame is left alone: that is either
-        a barcode misread or two tags genuinely issued the same number, and both
-        need a human, so the duplicate warning must still fire.
+        A single tag can reach this point twice -- once from its color region
+        and once from a second-chance decode inside a neighbour's crop, say.
+        Same ID *and* overlapping geometry means one piece of card seen twice,
+        so the weaker read is dropped; otherwise it would be counted as two
+        patients.
+
+        This is deliberately NOT duplicate-ID handling. Two tags carrying the
+        same patient ID at different places in the frame are both reported, as
+        separate line items, whether or not their acuities agree -- reconciling
+        that is another system's job, and this one's contract is to report what
+        it saw.
         """
         kept: list[TagDetection] = []
         for tag in sorted(tags, key=lambda t: t.confidence, reverse=True):
@@ -784,19 +782,6 @@ class TriageTagDetector:
             if twin is None:
                 kept.append(tag)
         return kept
-
-    @staticmethod
-    def _duplicate_ids(tags: list[TagDetection]) -> set[str]:
-        seen: set[str] = set()
-        dupes: set[str] = set()
-        for t in tags:
-            if not t.patient_id:
-                continue
-            if t.patient_id in seen:
-                dupes.add(t.patient_id)
-            seen.add(t.patient_id)
-        return dupes
-
 
 def annotate(image, result: DetectionResult) -> np.ndarray:
     """Draw detections, for debugging or an operator-facing preview."""

@@ -85,5 +85,5 @@ async def detect(
         raise HTTPException(status_code=500, detail="detection failed") from None
 
     if roster_only:
-        return JSONResponse({"tags": result.roster(), "count": len(result.tags)})
+        return JSONResponse({"tags": result.roster(), "count": result.tag_count})
     return JSONResponse(result.to_dict())

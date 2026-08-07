@@ -81,7 +81,9 @@ def main(argv: list[str] | None = None) -> int:
 
         entry = {"image": str(path)}
         entry.update(
-            {"tags": result.roster()} if args.roster else result.to_dict()
+            {"tags": result.roster(), "count": result.tag_count}
+            if args.roster
+            else result.to_dict()
         )
         payload.append(entry)
 

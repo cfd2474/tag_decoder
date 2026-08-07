@@ -140,17 +140,38 @@ class DetectionResult:
     elapsed_ms: float
     warnings: list[str] = field(default_factory=list)
 
+    @property
+    def tag_count(self) -> int:
+        """Number of tags reported -- i.e. the number of line items.
+
+        One entry per physical tag read. Two tags carrying the same patient ID
+        count as two, whether or not their acuities match: reconciling that is
+        a downstream decision, and collapsing them here would hide a tag that
+        physically exists.
+        """
+        return len(self.tags)
+
+    @property
+    def identified_count(self) -> int:
+        """How many of those tags yielded a patient ID."""
+        return sum(1 for t in self.tags if t.patient_id)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "tags": [t.to_dict() for t in self.tags],
-            "count": len(self.tags),
+            "count": self.tag_count,
+            "identified_count": self.identified_count,
             "image_size": {"width": self.image_size[0], "height": self.image_size[1]},
             "elapsed_ms": round(self.elapsed_ms, 2),
             "warnings": self.warnings,
         }
 
     def roster(self) -> list[dict[str, str]]:
-        """Minimal downstream payload: just id + acuity."""
+        """Minimal downstream payload: id + acuity, one entry per tag.
+
+        Repeats are preserved. If the same patient ID appears on two tags, both
+        appear here -- as they would if the IDs differed.
+        """
         return [
             {"patient_id": t.patient_id, "acuity": t.acuity.value}
             for t in self.tags
