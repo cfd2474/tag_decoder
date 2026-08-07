@@ -1,8 +1,16 @@
 # triagevision
 
 Reads a photograph containing any number of triage tags and returns, per tag,
-the **patient ID** and the **acuity level** (IMMEDIATE / DELAYED / MINOR /
-EXPECTANT / DEAD).
+the **patient ID** and the **acuity level**.
+
+Categories are the exact words printed on the tag: `IMMEDIATE`, `DELAYED`,
+`MINOR`, `EXPECTANT`, `DEAD`, `MORGUE`, plus `UNKNOWN` when the banner cannot be
+read confidently.
+
+**`DEAD` and `MORGUE` are deliberately not merged.** They are the same clinical
+outcome under two different triage protocols, and collapsing them would destroy
+information the consuming system needs. Callers that genuinely want to treat them
+alike should say so explicitly via `acuity.is_deceased`.
 
 Designed to run as a module inside an existing server — the detector is a plain
 Python class with no web framework dependency. An optional FastAPI wrapper and a
@@ -79,11 +87,21 @@ top by construction, at any angle.
 |---|---|---|
 | 0° / 90° / 180° | 9/9 | 9/9 |
 | 270° | 8/9 | 9/9 |
-| 37° / −23° | 8/9 | 8/9 |
+| 37° | 8/9 | 8/9 |
+| −23° | 7/9 | 8/9 |
 
-Arbitrary angles need the rotation sweep (below), since zxing scans along rows
-and has blind bands between its 90° retries — an unswept frame rotated 37° drops
+Arbitrary angles need the **rotation sweep**: zxing scans along rows and retries
+at 90° steps, leaving blind bands in between. An unswept frame rotated 37° drops
 from nine decoded symbols to **zero**.
+
+The sweep always runs to completion, at half scale (~0.6 s). It deliberately has
+no early exit — there is no way to know how many tags a frame contains, so
+"we already found some, stop looking" silently drops patients. Measured on a
+five-tag frame: the cheap passes found two, an early exit stopped at 30°, and
+the other three only decoded at 60° and 75°.
+
+A second five-tag photo, tags at four different orientations including 90° and
+inverted, plus a MORGUE tag: **5/5 in 3.2 s**.
 
 ---
 
@@ -124,11 +142,18 @@ ID on two tags. Do not discard it.
 
 ### Safety behaviour
 
-- OCR noise never invents a category. Fuzzy matching is length-guarded and
-  floored at 0.72 similarity; a weak match with nothing corroborating it returns
-  `UNKNOWN`. A confidently wrong triage category is worse than an unread one.
-- Most vendors print DEAD and EXPECTANT on the same black field, so colour cannot
-  separate them. With no readable banner, that returns `UNKNOWN`, not a coin flip.
+- OCR noise never invents a category. Fuzzy matching is length-guarded, and the
+  similarity floor scales with word length; a weak match with nothing
+  corroborating it returns `UNKNOWN`. A confidently wrong triage category is
+  worse than an unread one.
+- **`DEAD` requires an exact read.** At four characters, a genuine OCR slip
+  (`DEAO`, `OEAD`) scores 0.750 against `DEAD` — and so do `READ`, `HEAD`,
+  `BEAD` and `DEED`. No threshold admits the slips while rejecting the real
+  words, so fuzzy matching is disabled for it entirely. `MINOR` (5 chars, slip
+  0.800 vs nearest confusable `MAJOR` 0.600) uses 0.78; 6+ characters use 0.72.
+- `DEAD` and `MORGUE` print on the same black field, so colour cannot separate
+  them — only the word can. With no readable banner that returns `UNKNOWN`,
+  not a coin flip between two protocols. (`EXPECTANT` is a grey field.)
 - `DetectorConfig(require_text=True)` refuses to infer acuity from colour at all.
 
 ---

@@ -8,14 +8,27 @@ from typing import Any
 
 
 class Acuity(str, enum.Enum):
-    """START/SALT triage categories."""
+    """Triage categories, exactly as printed on the tag.
+
+    DEAD and MORGUE denote the same clinical outcome but come from two different
+    triage protocols, and they are deliberately NOT merged: this output feeds
+    another system, and collapsing them would destroy the information about
+    which protocol produced the tag. Anything that needs to treat them alike
+    should do so explicitly -- see `is_deceased`.
+    """
 
     IMMEDIATE = "IMMEDIATE"
     DELAYED = "DELAYED"
     MINOR = "MINOR"
     EXPECTANT = "EXPECTANT"
     DEAD = "DEAD"
+    MORGUE = "MORGUE"
     UNKNOWN = "UNKNOWN"
+
+    @property
+    def is_deceased(self) -> bool:
+        """True for both protocols' deceased category, for callers that need it."""
+        return self in (Acuity.DEAD, Acuity.MORGUE)
 
 
 @dataclass(frozen=True)

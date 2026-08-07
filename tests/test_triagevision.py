@@ -38,14 +38,32 @@ from triagevision.types import BBox, BarcodeRead, ColorRead, TagDetection
         ("IMMEDIATE", Acuity.IMMEDIATE),
         ("  delayed \n", Acuity.DELAYED),
         ("MINOR", Acuity.MINOR),
-        ("DECEASED", Acuity.DEAD),
         ("EXPECTANT", Acuity.EXPECTANT),
+        ("DEAD", Acuity.DEAD),
+        ("MORGUE", Acuity.MORGUE),
     ],
 )
 def test_exact_keywords(text, expected):
     v = match_keyword(text, DEFAULT_TEXT_KEYWORDS)
     assert v.acuity is expected
     assert v.exact
+
+
+def test_dead_and_morgue_stay_distinct():
+    """Same clinical outcome, two protocols -- but the consuming system needs to
+    know which tag it saw, so these must never be collapsed.
+    """
+    assert match_keyword("DEAD", DEFAULT_TEXT_KEYWORDS).acuity is Acuity.DEAD
+    assert match_keyword("MORGUE", DEFAULT_TEXT_KEYWORDS).acuity is Acuity.MORGUE
+    assert Acuity.DEAD is not Acuity.MORGUE
+    assert Acuity.DEAD.is_deceased and Acuity.MORGUE.is_deceased
+    assert not Acuity.IMMEDIATE.is_deceased
+
+
+def test_vocabulary_is_exactly_the_printed_set():
+    assert set(DEFAULT_TEXT_KEYWORDS) == {
+        "IMMEDIATE", "DELAYED", "MINOR", "EXPECTANT", "DEAD", "MORGUE",
+    }
 
 
 @pytest.mark.parametrize("text,expected", [("IMMEDIAIE", Acuity.IMMEDIATE),
@@ -71,6 +89,29 @@ def test_garbage_does_not_invent_a_category(garbage):
 
 def test_long_smear_cannot_match_short_keyword():
     assert match_keyword("KCRANAAAALAUTAATTATAA", DEFAULT_TEXT_KEYWORDS).acuity is None
+
+
+@pytest.mark.parametrize("noise", ["DEED", "READ", "BEAD", "HEAD", "DEAO", "OEAD"])
+def test_dead_is_exact_match_only(noise):
+    """DEAD is four characters, where a genuine OCR slip (DEAO, OEAD) scores
+    exactly the same 0.750 as unrelated real words (READ, HEAD, BEAD, DEED).
+    No threshold separates them, so nothing but an exact read is accepted --
+    a misread becomes UNKNOWN, which is the right outcome for the category
+    that is worst to invent.
+    """
+    assert match_keyword(noise, DEFAULT_TEXT_KEYWORDS).acuity is None
+
+
+def test_minor_still_tolerates_a_single_slip():
+    """Five characters is long enough to separate a slip (0.800) from the
+    nearest confusable real word, MAJOR (0.600).
+    """
+    assert match_keyword("MINDR", DEFAULT_TEXT_KEYWORDS).acuity is Acuity.MINOR
+    assert match_keyword("MAJOR", DEFAULT_TEXT_KEYWORDS).acuity is None
+
+
+def test_morgue_tolerates_a_single_slip():
+    assert match_keyword("MORGVE", DEFAULT_TEXT_KEYWORDS).acuity is Acuity.MORGUE
 
 
 # -------------------------------------------------------------------- geometry

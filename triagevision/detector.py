@@ -765,8 +765,9 @@ def annotate(image, result: DetectionResult) -> np.ndarray:
         Acuity.IMMEDIATE: (0, 0, 220),
         Acuity.DELAYED: (0, 210, 235),
         Acuity.MINOR: (0, 170, 0),
-        Acuity.EXPECTANT: (140, 140, 140),
-        Acuity.DEAD: (20, 20, 20),
+        Acuity.EXPECTANT: (150, 150, 150),   # grey field
+        Acuity.DEAD: (20, 20, 20),           # black field, one protocol...
+        Acuity.MORGUE: (55, 55, 55),         # ...and the other. Kept distinct.
         Acuity.UNKNOWN: (200, 0, 200),
     }
     for t in result.tags:

@@ -163,7 +163,18 @@ def suppress_glare(gray: np.ndarray) -> np.ndarray:
     the barcode -- in the sample photo that is exactly what costs us two of the
     nine symbols. Dividing by a heavily blurred copy removes the low-frequency
     illumination gradient while leaving the bar edges intact.
+
+    The blur is computed on a thumbnail and scaled back up. It is a very
+    low-frequency estimate by construction -- the sigma is a thirtieth of the
+    frame -- so downsampling costs nothing in accuracy, while blurring 12MP
+    directly with a kernel that wide takes over three seconds.
     """
-    blur = cv2.GaussianBlur(gray, (0, 0), sigmaX=max(gray.shape) / 30.0)
+    h, w = gray.shape[:2]
+    small_w = max(32, w // 8)
+    small_h = max(32, h // 8)
+    small = cv2.resize(gray, (small_w, small_h), interpolation=cv2.INTER_AREA)
+    blur_small = cv2.GaussianBlur(small, (0, 0), sigmaX=max(small_w, small_h) / 30.0)
+    blur = cv2.resize(blur_small, (w, h), interpolation=cv2.INTER_LINEAR)
+
     flat = cv2.divide(gray, blur, scale=192)
     return cv2.normalize(flat, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)

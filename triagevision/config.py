@@ -50,31 +50,38 @@ DEFAULT_COLOR_BANDS: tuple[ColorBand, ...] = (
         acuity_candidates=(Acuity.MINOR,),
     ),
     ColorBand(
-        name="blue",  # some EXPECTANT schemes use blue rather than black
-        hsv_ranges=(((95, 80, 50), (130, 255, 255)),),
+        name="grey",
+        hsv_ranges=(((0, 0, 60), (179, 55, 185)),),
         acuity_candidates=(Acuity.EXPECTANT,),
+        min_coverage=0.15,
     ),
     ColorBand(
         name="black",
-        hsv_ranges=(((0, 0, 0), (179, 90, 70)),),
-        acuity_candidates=(Acuity.DEAD, Acuity.EXPECTANT),
+        # DEAD and MORGUE print on the same black field, so colour cannot tell
+        # them apart -- only the banner word can. With the word unreadable this
+        # resolves to UNKNOWN rather than guessing between two protocols.
+        hsv_ranges=(((0, 0, 0), (179, 90, 55)),),
+        acuity_candidates=(Acuity.DEAD, Acuity.MORGUE),
         min_coverage=0.15,
     ),
 )
 
 
-# Banner words -> acuity. Matched case-insensitively against OCR output, with
-# fuzzy fallback, so partial reads still resolve.
+# Banner words -> acuity. This is the exact printed vocabulary of the tag stock,
+# always uppercase, and it is deliberately CLOSED: every extra synonym is another
+# chance for OCR noise to match something. Add words only if your stock prints
+# them.
+#
+# DEAD and MORGUE map to distinct categories on purpose. They are the same
+# clinical outcome under two different triage protocols, and the consuming
+# system needs to know which tag it was looking at.
 DEFAULT_TEXT_KEYWORDS: dict[str, Acuity] = {
     "IMMEDIATE": Acuity.IMMEDIATE,
     "DELAYED": Acuity.DELAYED,
     "MINOR": Acuity.MINOR,
-    "MINIMAL": Acuity.MINOR,
-    "WALKING WOUNDED": Acuity.MINOR,
     "EXPECTANT": Acuity.EXPECTANT,
-    "DECEASED": Acuity.DEAD,
     "DEAD": Acuity.DEAD,
-    "MORGUE": Acuity.DEAD,
+    "MORGUE": Acuity.MORGUE,
 }
 
 

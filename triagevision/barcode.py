@@ -114,7 +114,7 @@ def _close(a: BarcodeRead, b: BarcodeRead) -> bool:
 
 
 def _rotate_pass(
-    gray: np.ndarray, degrees: float, formats
+    gray: np.ndarray, degrees: float, formats, scale: float = 1.0
 ) -> list[BarcodeRead]:
     """Decode a rotated copy, mapping any hits back to original coordinates.
 
@@ -124,6 +124,14 @@ def _rotate_pass(
     measured on the sample sheet, a frame rotated 37 degrees drops from nine
     decoded symbols to zero. Sweeping two intermediate angles closes the gaps.
     """
+    # Sweeping at reduced scale. Rotating and re-scanning a full 12MP frame five
+    # times dominates the whole pipeline, and a tag's symbol is ~700px wide at
+    # native resolution -- half that is still ample for a 1D decoder. The sweep
+    # only has to FIND the symbol; coordinates map back to full resolution and
+    # everything downstream still works from the original pixels.
+    if scale != 1.0:
+        gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+
     h, w = gray.shape[:2]
     centre = (w / 2.0, h / 2.0)
     m = cv2.getRotationMatrix2D(centre, degrees, 1.0)
@@ -142,10 +150,11 @@ def _rotate_pass(
         return []
 
     inverse = cv2.invertAffineTransform(m)
+    inv_scale = 1.0 / scale
     for r in reads:
         pts = np.array([r.quad], dtype=np.float32)
         back = cv2.transform(pts, inverse)[0]
-        r.quad = [[int(p[0]), int(p[1])] for p in back]
+        r.quad = [[int(p[0] * inv_scale), int(p[1] * inv_scale)] for p in back]
         r.bbox = _quad_to_bbox(r.quad)
     return reads
 
@@ -174,18 +183,15 @@ def decode_barcodes(
         # symbol; flattening the illumination recovers those.
         _merge(found, _decode_pass(geometry.suppress_glare(gray), 1.0, formats))
 
-    # Close the decoder's angular blind bands. A frame where everything already
-    # decoded pays for two probes and stops; a diagonal frame, where the cheap
-    # passes found nothing, works through the whole sweep -- which is the case
-    # that would otherwise return an empty scene.
-    quiet = 0
+    # Close the decoder's angular blind bands. The sweep always runs to
+    # completion: there is no way to know how many tags a frame contains, so
+    # "we already found some, stop looking" silently drops patients. Measured on
+    # a five-tag frame, the cheap passes found two and an early exit stopped at
+    # 30 degrees -- while the other three only decoded at 60 and 75. At half
+    # scale the whole sweep costs about 0.6s, which is worth paying every time.
+    sweep_scale = 0.5 if gray.shape[0] * gray.shape[1] > 3_000_000 else 1.0
     for degrees in sweep_degrees:
-        if _merge(found, _rotate_pass(gray, degrees, formats)):
-            quiet = 0
-        else:
-            quiet += 1
-            if found and quiet >= 2:
-                break
+        _merge(found, _rotate_pass(gray, degrees, formats, scale=sweep_scale))
 
     # Upscaling a full-resolution phone frame is the most expensive thing here
     # (a 2x pass on 12MP is a 48MP scan), and it only pays off for symbols that

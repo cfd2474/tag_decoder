@@ -238,6 +238,29 @@ def preprocess_variants(crop: np.ndarray) -> Iterator[np.ndarray]:
 # -------------------------------------------------------------------- matching
 
 
+def _fuzzy_floor(word: str, min_ratio: float) -> float:
+    """Similarity a token must reach to be accepted as `word`.
+
+    Short words tolerate less fuzz, because for them a genuine OCR slip and an
+    entirely different word are indistinguishable. Measured against this
+    vocabulary:
+
+      DEAD (4)   single-char slips DEAO/OEAD score 0.750 -- and so do READ,
+                 HEAD, BEAD and DEED. There is no threshold that admits the
+                 slips while rejecting the real words, so DEAD is EXACT-ONLY.
+                 A misread yields UNKNOWN and a human look, which is the right
+                 outcome for the category that is worst to invent.
+      MINOR (5)  slips score 0.800, while the nearest confusable real word
+                 (MAJOR) scores 0.600. Separable, so 0.78.
+      6+         slips score 0.833 or better; the general floor holds.
+    """
+    if len(word) <= 4:
+        return 1.01  # unreachable by definition: exact match only
+    if len(word) == 5:
+        return 0.78
+    return min_ratio
+
+
 def match_keyword(
     text: str, keywords: dict[str, Acuity], min_ratio: float = 0.72
 ) -> TextVerdict:
@@ -277,10 +300,13 @@ def match_keyword(
             if abs(len(token) - len(word)) > max(2, int(0.35 * len(word))):
                 continue
             ratio = difflib.SequenceMatcher(None, token, word).ratio()
+            floor = _fuzzy_floor(word, min_ratio)
+            if ratio < floor:
+                continue
             if ratio > best_ratio:
                 best_ratio, best_acuity = ratio, acuity
 
-    if best_ratio < min_ratio:
+    if best_acuity is None:
         return TextVerdict(text, None, best_ratio)
     return TextVerdict(text, best_acuity, best_ratio)
 
