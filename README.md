@@ -122,30 +122,118 @@ and `MORGUE` share the black field and are separated only by the word.
 
 ---
 
-## Output
+## Output reference
+
+`detect()` returns a `DetectionResult`. `.to_dict()` gives the JSON below; it is
+the same shape the CLI and the HTTP endpoint emit.
 
 ```json
 {
-  "tags": [{
-    "patient_id": "EA1568511",
-    "acuity": "IMMEDIATE",
-    "confidence": 1.0,
-    "bbox": [903, 1832, 1104, 505],
-    "barcode": {"text": "EA1568511", "format": "Code39", "bbox": [...], "quad": [...]},
-    "banner_text": "IMMEDIATE",
-    "color": null,
-    "warnings": []
-  }],
-  "count": 1,
-  "identified_count": 1,
+  "tags": [
+    {
+      "patient_id": "EA1568519",
+      "acuity": "DELAYED",
+      "confidence": 0.95,
+      "bbox": [1002, 672, 787, 447],
+      "color": null,
+      "barcode": {
+        "text": "EA1568519",
+        "format": "Code 39",
+        "bbox": [1139, 943, 534, 8],
+        "quad": [[1139, 943], [1672, 943], [1673, 951], [1140, 951]]
+      },
+      "banner_text": "SDELAYED",
+      "warnings": [
+        "patient id came from a single Code 39 decode with no check character, and the printed id line could not be read to confirm it; treat the id as unverified"
+      ]
+    }
+  ],
+  "count": 7,
+  "identified_count": 7,
   "image_size": {"width": 3000, "height": 4000},
-  "elapsed_ms": 5412.7,
+  "elapsed_ms": 3187.4,
   "warnings": []
 }
 ```
 
-- `count` — line items returned, one per physical tag read (`result.tag_count`)
-- `identified_count` — how many of those yielded a patient ID (`result.identified_count`)
+### Top level
+
+| Field | Type | Description |
+|---|---|---|
+| `tags` | array | One entry per physical tag read. Ordered top-to-bottom, then left-to-right, by bounding-box centre. |
+| `count` | int | Number of line items in `tags`. Two tags sharing a patient ID count as two. Also `result.tag_count`. |
+| `identified_count` | int | How many of those yielded a patient ID. Lower than `count` only when a tag was located but its ID could not be recovered. Also `result.identified_count`. |
+| `image_size` | object | `{"width": int, "height": int}` of the submitted image, in pixels. |
+| `elapsed_ms` | float | Wall-clock processing time for this image. |
+| `warnings` | string[] | **Frame-level** notices, not tag-specific — currently only the missing-OCR-backend notice. Empty on a healthy run. Per-tag problems live on each tag. |
+
+### Per tag — `tags[]`
+
+| Field | Type | Description |
+|---|---|---|
+| `patient_id` | string \| `null` | The patient ID. `null` when a tag was located but no ID could be recovered — check `warnings` for why. |
+| `acuity` | string | One of `IMMEDIATE`, `DELAYED`, `MINOR`, `EXPECTANT`, `DEAD`, `MORGUE`, `UNKNOWN`. `DEAD` and `MORGUE` are never merged. |
+| `confidence` | float 0–1 | Interpretable score, composed below. **Below 0.60 warrants a human look.** |
+| `bbox` | `[x, y, w, h]` | Axis-aligned box in image pixels. This is the *upright* box around a possibly rotated tag, so it is larger than the tag itself when tilted. Use `barcode.quad` for true orientation. |
+| `color` | object \| `null` | `null` by default, since colour segmentation is off. Populated only with `use_color=True`. |
+| `barcode` | object \| `null` | `null` when no symbol decoded — in that case the ID, if any, came from OCR of the printed line and `warnings` will say so. |
+| `banner_text` | string \| `null` | **Raw, unparsed OCR output** of the banner, e.g. `"SDELAYED"`, `"EDEADY"`, `"V MINOR"`. Diagnostic only. `acuity` is the parsed result — do not parse this field yourself. |
+| `warnings` | string[] | Per-tag caveats. See below. |
+
+### `barcode`
+
+| Field | Type | Description |
+|---|---|---|
+| `text` | string | Raw decoded payload, before ID-pattern validation. Usually equals `patient_id`; differs if the payload failed validation. |
+| `format` | string | Symbology as the decoder reports it, e.g. `"Code 39"`, `"Code 128"` — note the space. Determines whether a clean decode is self-verifying. |
+| `bbox` | `[x, y, w, h]` | Symbol bounds in image pixels. **Height is unreliable** — decoders report it erratically (6 px to 134 px across identical tags). Width is trustworthy. |
+| `quad` | `[[x, y] × 4]` | Corners in **reading order**, so `quad[0] → quad[1]` is the symbol's reading direction and gives the tag's full 360° orientation. |
+
+### `color` — only when `use_color=True`
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | string | `red`, `yellow`, `green`, `slate`, `black`. |
+| `acuity_candidates` | string[] | Categories this field colour permits. `black` gives `["DEAD", "MORGUE"]` — colour alone cannot separate those two. |
+| `score` | float 0–1 | Separation from the next-best colour. Near 1.0 is a clean single-colour field. |
+| `coverage` | float 0–1 | Fraction of the region matching this band. |
+
+### How `confidence` is composed
+
+| Weight | Condition |
+|---|---|
+| `0.40` | patient ID recovered |
+| `0.55` | acuity from banner text — full on an exact word match, scaled by similarity on a fuzzy one |
+| `+0.05` | barcode matches the printed ID line exactly |
+| `−0.20` | barcode clearly contradicts the printed ID line |
+
+**Treat anything below 0.60 as needing a human look.** A tag whose acuity came
+from colour alone tops out near 0.57 by design — the honest position when the
+only evidence is lighting-dependent.
+
+### Per-tag `warnings` you will actually see
+
+| Message (abbreviated) | Meaning |
+|---|---|
+| `…treat the id as unverified` | The ID rests on a single Code 39 decode with no check character, and the printed line could not be read to confirm it. Not an error — just uncorroborated. |
+| `barcode says X but the printed id reads Y … verify this tag` | The two disagree substantially (similarity < 0.50). The barcode value is kept. |
+| `banner text unreadable` / `matched no known category` | The acuity word could not be read or did not match the vocabulary. |
+| `acuity inferred from field color … verify before acting` | Banner unreadable, colour used as fallback. Only possible with `use_color=True`. |
+| `no readable barcode and no readable printed id` | Tag located but unidentifiable; `patient_id` is `null`. |
+
+Do not filter these out of your downstream feed — with a check-digit-less
+symbology they are the only signal distinguishing a corroborated ID from an
+uncorroborated one.
+
+### Python accessors
+
+| Expression | Returns |
+|---|---|
+| `result.tag_count` | `int` — line items, same as `count` |
+| `result.identified_count` | `int` — those with a patient ID |
+| `result.roster()` | `[{"patient_id": str, "acuity": str}]` — minimal payload, repeats preserved |
+| `result.tags[i].acuity.is_deceased` | `bool` — `True` for both `DEAD` and `MORGUE`, for callers that need to treat them alike |
+| `annotate(image, result)` | BGR image with boxes and labels drawn, for debugging |
 
 ### Duplicate patient IDs are reported, not reconciled
 
@@ -154,8 +242,11 @@ both are returned as separate line items — exactly as they would be with
 different IDs, and **whether or not their acuities agree**:
 
 ```python
-detector.detect("two_tags_one_id.jpg").roster()
-# [{'patient_id': 'SN1050837', 'acuity': 'EXPECTANT'},
+detector.detect("seven_tags.jpg").roster()
+# [{'patient_id': 'EA1568519', 'acuity': 'DELAYED'},
+#  {'patient_id': 'SN1050837', 'acuity': 'EXPECTANT'},
+#  {'patient_id': 'EA1568511', 'acuity': 'MORGUE'},
+#  ...
 #  {'patient_id': 'SN1050837', 'acuity': 'DEAD'}]
 ```
 
@@ -167,20 +258,6 @@ that physically exists.
 The one thing that *is* de-duplicated is a single physical tag detected twice
 (same ID **and** overlapping geometry), since counting one piece of card as two
 patients would corrupt `count`.
-
-`confidence` is interpretable, not a model score:
-
-- `0.40` patient ID recovered
-- `0.55` acuity from banner text (full on an exact word match, scaled on a fuzzy one)
-- `±0.05 / −0.20` barcode agrees / disagrees with the printed ID line
-
-**Treat anything below 0.60 as needing a human look.** A tag whose acuity came
-from colour alone tops out near 0.57 by design — that is the honest position when
-the only evidence is lighting-dependent.
-
-`warnings` is the channel for everything a dispatcher needs to know: an
-unreadable banner, a barcode that disagrees with the printed ID, the same patient
-ID on two tags. Do not discard it.
 
 ### Safety behaviour
 

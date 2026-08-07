@@ -335,6 +335,50 @@ def test_two_tags_sharing_an_id_are_both_reported():
         assert result.warnings == []
 
 
+def test_output_schema_matches_the_documented_fields():
+    """Lock the wire format against the README's "Output reference".
+
+    Consumers parse these keys, and the docs promise exactly this set. Adding,
+    renaming or dropping a field should fail here and force the README to be
+    updated in the same commit, rather than silently drifting.
+    """
+    from triagevision.types import DetectionResult
+
+    tag = TagDetection(
+        patient_id="EA1",
+        acuity=Acuity.IMMEDIATE,
+        confidence=0.95,
+        bbox=BBox(0, 0, 10, 10),
+        color=ColorRead("red", [Acuity.IMMEDIATE], score=0.9, coverage=0.5),
+        barcode=BarcodeRead("EA1", "Code 39", BBox(1, 1, 5, 2), quad=[[1, 1]] * 4),
+        banner_text="IMMEDIATE",
+    )
+    payload = DetectionResult([tag], (100, 200), 12.5).to_dict()
+
+    assert set(payload) == {
+        "tags", "count", "identified_count", "image_size", "elapsed_ms", "warnings",
+    }
+    assert set(payload["image_size"]) == {"width", "height"}
+    assert set(payload["tags"][0]) == {
+        "patient_id", "acuity", "confidence", "bbox",
+        "color", "barcode", "banner_text", "warnings",
+    }
+    assert set(payload["tags"][0]["barcode"]) == {"text", "format", "bbox", "quad"}
+    assert set(payload["tags"][0]["color"]) == {
+        "name", "acuity_candidates", "score", "coverage",
+    }
+    # roster() is the minimal contract and must stay exactly two keys.
+    assert set(DetectionResult([tag], (1, 1), 0.0).roster()[0]) == {
+        "patient_id", "acuity",
+    }
+
+
+def test_documented_acuity_values_are_the_full_set():
+    assert {a.value for a in Acuity} == {
+        "IMMEDIATE", "DELAYED", "MINOR", "EXPECTANT", "DEAD", "MORGUE", "UNKNOWN",
+    }
+
+
 def test_counts_report_line_items_and_identified():
     from triagevision.types import DetectionResult
 
