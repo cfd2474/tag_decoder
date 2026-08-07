@@ -241,3 +241,7 @@ python -m pytest tests/
   cross-check is what catches this; do not disable OCR and then trust IDs blindly.
 - Not a medical device. Output is decision *support* — the confidence score and
   warnings exist so a human stays in the loop.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
