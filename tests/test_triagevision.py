@@ -60,6 +60,23 @@ def test_dead_and_morgue_stay_distinct():
     assert not Acuity.IMMEDIATE.is_deceased
 
 
+def test_expectant_band_covers_grey_and_slate_blue():
+    """EXPECTANT stock is called "grey" but is often printed slate blue
+    (measured: H=107 S=82 V=137). Both must fall in the band.
+    """
+    import cv2
+
+    from triagevision.color import build_masks
+    from triagevision.config import DEFAULT_COLOR_BANDS
+
+    for hsv in ((107, 82, 137), (0, 0, 130)):  # slate blue, neutral grey
+        patch = cv2.cvtColor(
+            np.full((20, 20, 3), hsv, np.uint8), cv2.COLOR_HSV2BGR
+        )
+        masks = build_masks(patch, DEFAULT_COLOR_BANDS)
+        assert masks["slate"].any(), f"{hsv} not matched as EXPECTANT field"
+
+
 def test_vocabulary_is_exactly_the_printed_set():
     assert set(DEFAULT_TEXT_KEYWORDS) == {
         "IMMEDIATE", "DELAYED", "MINOR", "EXPECTANT", "DEAD", "MORGUE",

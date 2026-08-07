@@ -103,6 +103,23 @@ the other three only decoded at 60° and 75°.
 A second five-tag photo, tags at four different orientations including 90° and
 inverted, plus a MORGUE tag: **5/5 in 3.2 s**.
 
+### Category coverage
+
+All six printed categories have been read from real tags:
+
+| Category | Field | Verified |
+|---|---|---|
+| IMMEDIATE | red | ✓ |
+| DELAYED | yellow | ✓ |
+| MINOR | green | ✓ |
+| EXPECTANT | slate blue | ✓ |
+| DEAD | black | ✓ (exact read; fuzzy disabled) |
+| MORGUE | black | ✓ |
+
+`EXPECTANT` is commonly described as a grey tag but is printed slate blue on the
+stock measured here (H=107 S=82 V=137), so the colour band covers both. `DEAD`
+and `MORGUE` share the black field and are separated only by the word.
+
 ---
 
 ## Output

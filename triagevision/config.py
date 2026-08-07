@@ -50,8 +50,15 @@ DEFAULT_COLOR_BANDS: tuple[ColorBand, ...] = (
         acuity_candidates=(Acuity.MINOR,),
     ),
     ColorBand(
-        name="grey",
-        hsv_ranges=(((0, 0, 60), (179, 55, 185)),),
+        name="slate",
+        # EXPECTANT stock is described as "grey" but is often printed slate
+        # blue: measured on a real tag, the field sits at H=107 S=82 V=137,
+        # which a neutral-grey band (low saturation only) catches by accident
+        # at best. Both are covered.
+        hsv_ranges=(
+            ((0, 0, 60), (179, 45, 190)),      # neutral grey
+            ((90, 30, 60), (130, 150, 205)),   # slate blue, as measured
+        ),
         acuity_candidates=(Acuity.EXPECTANT,),
         min_coverage=0.15,
     ),
