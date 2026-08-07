@@ -30,6 +30,23 @@ import numpy as np
 from .types import Acuity
 
 
+# How far ahead of the runner-up a fuzzy match must sit to count as confident.
+#
+# Measured over real banner reads and real OCR garbage from the sample sheets,
+# the two populations separate completely on margin, and only partially on
+# absolute score:
+#
+#   real reads   score 0.696-0.933   margin 0.267-0.600
+#   garbage      score 0.190-0.444   margin 0.000-0.111
+#
+# Absolute score alone is the wrong discriminator. "XEECTANTAY" scores just
+# 0.737 against EXPECTANT -- OCR chewed both ends -- but scores 0.353 against
+# everything else, so the category is not in doubt. Garbage scores poorly
+# against every word roughly equally, which is exactly what a small margin
+# means. This is the same idea as a nearest-neighbour ratio test.
+MIN_MARGIN = 0.20
+
+
 @dataclass
 class TextVerdict:
     """Outcome of reading one region."""
@@ -38,10 +55,18 @@ class TextVerdict:
     acuity: Acuity | None
     score: float          # 0-1 similarity to the matched keyword
     exact: bool = False   # keyword found verbatim, not fuzzily
+    margin: float = 0.0   # lead over the next-best keyword
 
     @property
     def confident(self) -> bool:
-        return self.acuity is not None and (self.exact or self.score >= 0.80)
+        """Whether this match can stand on its own, with nothing corroborating.
+
+        Judged on the lead over the runner-up rather than the raw score. An
+        absolute threshold rejected legitimate reads of long words whose ends
+        were garbled, while admitting nothing extra -- and since field colour is
+        off by default, "weak unless colour agrees" meant "weak, always".
+        """
+        return self.acuity is not None and (self.exact or self.margin >= MIN_MARGIN)
 
 
 class TextReader(Protocol):
@@ -293,28 +318,42 @@ def match_keyword(
 
     for word, acuity in keywords.items():
         if word in upper:
-            return TextVerdict(text, acuity, 1.0, exact=True)
+            return TextVerdict(text, acuity, 1.0, exact=True, margin=1.0)
 
-    best_acuity: Acuity | None = None
-    best_ratio = 0.0
     tokens = [t for t in upper.split() if len(t) >= 4]
     if upper not in tokens and len(upper) < 24:
         tokens.append(upper)
 
+    best_acuity: Acuity | None = None
+    best_ratio = 0.0
+    best_margin = 0.0
+
     for token in tokens:
+        # Score against every word first, so the runner-up is known. The margin
+        # over it is what distinguishes a mangled real read from noise: garbage
+        # sits roughly equidistant from the whole vocabulary.
+        ratios = {
+            word: difflib.SequenceMatcher(None, token, word).ratio()
+            for word in keywords
+        }
         for word, acuity in keywords.items():
             if abs(len(token) - len(word)) > max(2, int(0.35 * len(word))):
                 continue
-            ratio = difflib.SequenceMatcher(None, token, word).ratio()
-            floor = _fuzzy_floor(word, min_ratio)
-            if ratio < floor:
+            ratio = ratios[word]
+            if ratio < _fuzzy_floor(word, min_ratio):
                 continue
-            if ratio > best_ratio:
-                best_ratio, best_acuity = ratio, acuity
+            runner_up = max(
+                (v for w, v in ratios.items() if w != word), default=0.0
+            )
+            margin = ratio - runner_up
+            # Prefer the clearest discrimination, breaking ties on similarity.
+            if (margin, ratio) > (best_margin, best_ratio) or best_acuity is None:
+                best_ratio, best_margin = ratio, margin
+                best_acuity = acuity
 
     if best_acuity is None:
         return TextVerdict(text, None, best_ratio)
-    return TextVerdict(text, best_acuity, best_ratio)
+    return TextVerdict(text, best_acuity, best_ratio, margin=best_margin)
 
 
 def best_verdict(
@@ -345,7 +384,7 @@ def best_verdict(
             v = match_keyword(t, keywords)
             if v.exact:
                 return v
-            if v.score > best.score:
+            if (v.margin, v.score) > (best.margin, best.score):
                 best = v
             if calls >= max_calls:
                 return best

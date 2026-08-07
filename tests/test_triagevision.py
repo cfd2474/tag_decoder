@@ -104,6 +104,47 @@ def test_garbage_does_not_invent_a_category(garbage):
     assert match_keyword(garbage, DEFAULT_TEXT_KEYWORDS).acuity is None
 
 
+def test_garbled_long_word_still_resolves_confidently():
+    """A real read whose ends OCR mangled must not be downgraded to UNKNOWN.
+
+    This exact banner text came off a production server. It scores only 0.74
+    against EXPECTANT, but 0.35 against everything else -- the category is not
+    in doubt, and an absolute-score threshold wrongly rejected it. Confidence is
+    judged on the lead over the runner-up.
+    """
+    v = match_keyword("BE XEECTANTAY\nSN", DEFAULT_TEXT_KEYWORDS)
+    assert v.acuity is Acuity.EXPECTANT
+    assert v.score < 0.80          # would fail an absolute threshold
+    assert v.margin >= 0.20        # but is unambiguous
+    assert v.confident
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [("MMEDITE", Acuity.IMMEDIATE), ("MINDR", Acuity.MINOR),
+     ("MORGVE", Acuity.MORGUE), ("XEECTANTAY", Acuity.EXPECTANT)],
+)
+def test_mangled_reads_are_confident_without_colour(text, expected):
+    """Colour is off by default, so a rule requiring colour corroboration to
+    accept a fuzzy match could never be satisfied -- it meant "weak, always".
+    """
+    v = match_keyword(text, DEFAULT_TEXT_KEYWORDS)
+    assert v.acuity is expected and v.confident
+
+
+@pytest.mark.parametrize(
+    "garbage",
+    ["ESM STRUREARY", "SEESUEEEVEPEEB", "NGTUNN", "H EASS", "AYWD Y PHS XA"],
+)
+def test_garbage_has_no_margin_and_stays_rejected(garbage):
+    """Noise sits roughly equidistant from the whole vocabulary; that lack of a
+    lead is what separates it from a mangled real read.
+    """
+    v = match_keyword(garbage, DEFAULT_TEXT_KEYWORDS)
+    assert v.acuity is None
+    assert not v.confident
+
+
 def test_long_smear_cannot_match_short_keyword():
     assert match_keyword("KCRANAAAALAUTAATTATAA", DEFAULT_TEXT_KEYWORDS).acuity is None
 

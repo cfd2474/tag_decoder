@@ -576,12 +576,14 @@ class TriageTagDetector:
         if verdict.acuity is not None:
             if not options:
                 if not verdict.confident:
-                    # A weak fuzzy match with nothing to corroborate it is a
+                    # An ambiguous match with nothing to corroborate it is a
                     # guess. On a triage tag, a confident wrong category is
-                    # worse than admitting we could not read it.
+                    # worse than admitting we could not read it. "Ambiguous"
+                    # means close to more than one word, not merely a low score.
                     warns.append(
-                        f"banner text {verdict.text!r} matched "
-                        f"{verdict.acuity.value} only weakly ({verdict.score:.2f}) "
+                        f"banner text {verdict.text!r} is ambiguous: it matched "
+                        f"{verdict.acuity.value} at {verdict.score:.2f} but sits "
+                        f"only {verdict.margin:.2f} ahead of the next category, "
                         "and no field color corroborates it; reporting UNKNOWN"
                     )
                     return Acuity.UNKNOWN, warns, "none"

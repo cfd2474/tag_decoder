@@ -286,9 +286,22 @@ patients would corrupt `count`.
 ### Safety behaviour
 
 - OCR noise never invents a category. Fuzzy matching is length-guarded, and the
-  similarity floor scales with word length; a weak match with nothing
-  corroborating it returns `UNKNOWN`. A confidently wrong triage category is
-  worse than an unread one.
+  similarity floor scales with word length. A confidently wrong triage category
+  is worse than an unread one.
+- **A match is judged on its lead over the runner-up, not its raw score.**
+  Measured across real reads and real OCR garbage, the two separate completely
+  on margin and only partially on absolute similarity:
+
+  | | best score | margin over runner-up |
+  |---|---|---|
+  | real banner reads | 0.696 – 0.933 | **0.267 – 0.600** |
+  | OCR garbage | 0.190 – 0.444 | **0.000 – 0.111** |
+
+  `XEECTANTAY` scores just 0.74 against EXPECTANT — OCR chewed both ends — but
+  0.35 against everything else, so the category is not in doubt. Garbage scores
+  poorly against the whole vocabulary roughly equally, and that missing lead is
+  what identifies it. A match with a margin below 0.20 and nothing corroborating
+  it returns `UNKNOWN`.
 - **`DEAD` requires an exact read.** At four characters, a genuine OCR slip
   (`DEAO`, `OEAD`) scores 0.750 against `DEAD` — and so do `READ`, `HEAD`,
   `BEAD` and `DEED`. No threshold admits the slips while rejecting the real
