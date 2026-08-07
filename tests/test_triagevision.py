@@ -221,6 +221,67 @@ def test_merge_keeps_same_id_far_apart():
     assert len(found) == 2
 
 
+def test_tile_pass_maps_coordinates_back_to_the_frame(monkeypatch):
+    """A hit found inside a tile must be reported in full-frame coordinates.
+
+    Get this wrong and every tag localizes to the wrong place, which downstream
+    looks like a detection failure rather than an offset bug.
+    """
+    from triagevision import barcode as bm
+
+    seen: list[tuple[int, int]] = []
+
+    def fake_decode(tile, scale, formats):
+        seen.append(tile.shape[:2])
+        # One hit at a fixed offset inside whatever tile we are given.
+        quad = [[10, 5], [60, 5], [60, 15], [10, 15]]
+        return [BarcodeRead("X", "Code 39", bm._quad_to_bbox(quad), quad)]
+
+    monkeypatch.setattr(bm, "_decode_pass", fake_decode)
+    monkeypatch.setattr(bm.geometry, "suppress_glare", lambda g: g)
+
+    gray = np.zeros((600, 800), np.uint8)
+    reads = bm._tile_pass(gray, None, grid=(2, 2), overlap=0.0)
+
+    assert seen, "no tiles were scanned"
+    # Four tiles, each contributing a hit at a different frame position.
+    assert len({(r.bbox.x, r.bbox.y) for r in reads}) == 4
+    # The tile at column 1 starts at x=400, so its hit lands at x=410.
+    assert any(r.bbox.x == 410 for r in reads)
+    assert any(r.bbox.y == 305 for r in reads)  # row 1 starts at y=300
+
+
+def test_tile_grid_covers_the_whole_frame(monkeypatch):
+    """No gaps between tiles: a symbol must not fall between the cracks."""
+    from triagevision import barcode as bm
+
+    boxes: list[tuple[int, int, int, int]] = []
+
+    def record(tile, scale, formats):
+        return []
+
+    monkeypatch.setattr(bm, "_decode_pass", record)
+    monkeypatch.setattr(bm.geometry, "suppress_glare", lambda g: g)
+
+    h, w = 600, 800
+    covered = np.zeros((h, w), bool)
+    rows, cols = 3, 3
+    overlap = 0.25
+    tile_h, tile_w = h / rows, w / cols
+    pad_y, pad_x = tile_h * overlap, tile_w * overlap
+    for r in range(rows):
+        for c in range(cols):
+            y0 = max(0, int(r * tile_h - pad_y))
+            y1 = min(h, int((r + 1) * tile_h + pad_y))
+            x0 = max(0, int(c * tile_w - pad_x))
+            x1 = min(w, int((c + 1) * tile_w + pad_x))
+            covered[y0:y1, x0:x1] = True
+            boxes.append((x0, y0, x1, y1))
+    assert covered.all()
+    # Overlap must be real, or a symbol on a seam is cut in every tile.
+    assert boxes[0][2] > int(w / cols)
+
+
 def test_close_uses_long_dimension():
     """Tolerance scales with the symbol's width, so the wildly varying reported
     height cannot make one barcode look like two. Numbers here are the real

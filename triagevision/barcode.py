@@ -7,6 +7,9 @@ handles rotated/perspective-skewed symbols natively.
 
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
+
 import cv2
 import numpy as np
 
@@ -182,12 +185,89 @@ def _rotate_pass(
     return reads
 
 
+# Two complementary tile scales, run in sequence and unioned. One grid is not
+# enough and a "best" grid does not exist: measured on a fifteen-tag sheet,
+# every single grid tried missed at least one symbol, and *which* one it missed
+# changed with the grid, because zxing's response depends on how a symbol
+# happens to sit inside its scan window. Coarse tiles catch symbols that need
+# surrounding context; fine tiles catch the ones that only decode when cropped
+# close. Together they found all fifteen; separately, never more than fourteen.
+TILE_PLAN: tuple[tuple[tuple[int, int], float], ...] = (
+    ((4, 4), 0.25),
+    ((12, 7), 0.30),
+)
+
+
+def _tile_pass(
+    gray: np.ndarray, formats, grid: tuple[int, int] = (3, 3), overlap: float = 0.25
+) -> list[BarcodeRead]:
+    """Decode over an overlapping tile grid, mapping hits back to frame coords.
+
+    A whole-frame scan does not reliably return every symbol present. Measured
+    on a fifteen-tag sheet, one pass returned two instances of some repeated
+    payloads but only one of others -- and the skipped tags were invisible,
+    because with colour off the barcode is the sole localizer. Both of the
+    symbols it missed decoded immediately once cropped.
+
+    Tiling fixes that on two fronts: each symbol occupies far more of the tile
+    than it does the frame, and no symbol has to compete with fourteen others
+    inside a single scan. Tiles overlap so a barcode straddling a seam is still
+    whole in at least one of them.
+    """
+    h, w = gray.shape[:2]
+    rows, cols = grid
+    tile_h, tile_w = h / rows, w / cols
+    pad_y, pad_x = tile_h * overlap, tile_w * overlap
+
+    boxes = []
+    for r in range(rows):
+        for c in range(cols):
+            y0 = max(0, int(r * tile_h - pad_y))
+            y1 = min(h, int((r + 1) * tile_h + pad_y))
+            x0 = max(0, int(c * tile_w - pad_x))
+            x1 = min(w, int((c + 1) * tile_w + pad_x))
+            if y1 - y0 >= 32 and x1 - x0 >= 32:
+                boxes.append((x0, y0, x1, y1))
+
+    def scan(box) -> list[BarcodeRead]:
+        x0, y0, x1, y1 = box
+        tile = gray[y0:y1, x0:x1]
+
+        # Native, then glare-flattened. Illumination correction has to be
+        # applied at TILE scale, not just to the whole frame: a specular
+        # highlight is local, and flattening it across 12MP leaves the local
+        # gradient intact. One symbol on the sample sheet decodes only under the
+        # combination of a tight crop and per-tile glare suppression -- it fails
+        # at native scale, and fails glare-corrected at full frame.
+        reads = _decode_pass(tile, 1.0, formats)
+        _merge(reads, _decode_pass(geometry.suppress_glare(tile), 1.0, formats))
+
+        for read in reads:
+            read.quad = [[px + x0, py + y0] for px, py in read.quad]
+            read.bbox = _quad_to_bbox(read.quad)
+        return reads
+
+    # Decoding releases the GIL, so tiles genuinely run in parallel. Merging
+    # stays on this thread: it is order-dependent and cheap.
+    workers = min(len(boxes), (os.cpu_count() or 4))
+    found: list[BarcodeRead] = []
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for reads in pool.map(scan, boxes):
+                _merge(found, reads)
+    else:
+        for box in boxes:
+            _merge(found, scan(box))
+    return found
+
+
 def decode_barcodes(
     image: np.ndarray,
     scales: tuple[float, ...] = (1.0, 2.0, 3.0),
     formats=DEFAULT_FORMATS,
     try_glare: bool = True,
     sweep_degrees: tuple[float, ...] = (15.0, 30.0, 45.0, 60.0, 75.0),
+    tile_plan: tuple[tuple[tuple[int, int], float], ...] | None = TILE_PLAN,
 ) -> list[BarcodeRead]:
     """Decode every symbol in `image`, escalating effort until nothing new appears.
 
@@ -205,6 +285,12 @@ def decode_barcodes(
         # Glossy laminated tags under a scene light blow out a band across the
         # symbol; flattening the illumination recovers those.
         _merge(found, _decode_pass(geometry.suppress_glare(gray), 1.0, formats))
+
+    # A whole-frame scan silently skips symbols on a crowded sheet, so always
+    # re-scan in tiles, at two scales. Like the rotation sweep, this has no
+    # early exit: the frame gives no way to know how many tags it holds.
+    for grid, overlap in tile_plan or ():
+        _merge(found, _tile_pass(gray, formats, grid=grid, overlap=overlap))
 
     # Close the decoder's angular blind bands. The sweep always runs to
     # completion: there is no way to know how many tags a frame contains, so

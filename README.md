@@ -103,6 +103,30 @@ the other three only decoded at 60° and 75°.
 A second five-tag photo, tags at four different orientations including 90° and
 inverted, plus a MORGUE tag: **5/5 in 3.2 s**.
 
+### Crowded frames need tiled decoding
+
+A whole-frame scan does not reliably return every symbol present. On a
+fifteen-tag sheet, one pass returned two instances of some repeated payloads but
+only one of others — and with colour off the barcode is the sole localizer, so a
+skipped symbol is a patient who silently disappears. Both symbols it missed
+decoded immediately once cropped.
+
+So every frame is also re-scanned in overlapping tiles, at **two scales**. One
+grid is not enough, and a "best" grid does not exist: every single grid tried
+missed at least one symbol, and *which* one changed with the grid, because the
+decoder's response depends on how a symbol happens to sit inside its scan
+window. Coarse tiles catch symbols needing surrounding context; fine tiles catch
+those that only decode cropped close. Together: 15/15. Separately: never more
+than 14.
+
+One symbol needed a third condition — a tight crop **and** glare suppression
+applied at tile scale. Full-frame illumination correction did not rescue it,
+because a specular highlight is local and flattening it across 12 MP leaves the
+local gradient intact. Tiles are therefore scanned native *and* glare-flattened.
+
+Tiles decode in parallel (zxing releases the GIL), which is what keeps this
+affordable.
+
 ### Category coverage
 
 All six printed categories have been read from real tags:
@@ -318,8 +342,19 @@ uvicorn triagevision.service:app --host 0.0.0.0 --port 8080
 
 ## Performance
 
-~5–7 s for a nine-tag 12 MP phone photo on a laptop CPU; ~10 s when the rotation
-sweep runs in full. Tags within a frame are read in parallel (`max_workers`).
+Measured on 12 MP phone photos, laptop CPU, all correct:
+
+| Frame | Tags | Time |
+|---|---|---|
+| single tag | 1 | 2.5 s |
+| five tags | 5 | 3.8 s |
+| nine tags | 9 | 4.5 s |
+| fifteen tags | 15 | 5.9 s |
+| sixteen tags | 16 | 4.7 s |
+
+Roughly 2.5 s of fixed cost (whole-frame decode, glare pass, two tile scales,
+rotation sweep) plus ~0.2 s per tag. Both the tile decodes and the per-tag
+reading run in parallel (`max_workers`).
 
 Cost is dominated by OCR, because `pytesseract` shells out to the tesseract
 binary once per call. If you need more throughput, in order of payoff:

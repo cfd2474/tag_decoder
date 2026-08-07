@@ -381,7 +381,7 @@ class TriageTagDetector:
 
         best = blank
         for crop in crops:
-            v = best_verdict(self.reader, [crop], self.cfg.text_keywords, max_calls=3)
+            v = best_verdict(self.reader, [crop], self.cfg.text_keywords, max_calls=4)
             if v.exact:
                 return v
             if v.score > best.score:
@@ -395,7 +395,7 @@ class TriageTagDetector:
                 self.reader,
                 [self._band(flipped, *BANNER_BAND)],
                 self.cfg.text_keywords,
-                max_calls=3,
+                max_calls=4,
             )
             if v.score > best.score:
                 best = v

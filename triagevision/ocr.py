@@ -69,10 +69,11 @@ class TesseractReader:
     the ROI is generous.
     """
 
-    # psm 7 = one text line (a tight banner crop); psm 6 = uniform block
-    # (a looser crop that may include the ID line); psm 11 = sparse text
-    # (a skewed or partly occluded tag).
-    PSM_MODES = (7, 6, 11)
+    # psm 7 = one text line (a tight banner crop); psm 6 = uniform block (a
+    # looser crop that also catches the ID line and the top of the barcode,
+    # which is the common case). psm 11 (sparse text) is omitted: it almost
+    # never won, and under a call budget it only displaced a mode that would.
+    PSM_MODES = (7, 6)
 
     def __init__(self, lang: str = "eng", psm_modes: tuple[int, ...] | None = None):
         self.lang = lang
@@ -145,21 +146,22 @@ class TesseractReader:
         A generator, not a list, so the caller stops the moment it has an exact
         keyword hit -- which for a clean banner is the very first call.
 
-        Segmentation mode is the OUTER loop and preprocessing the inner one.
-        The unknown that actually decides success is polarity (white-on-red vs
-        black-on-yellow), so a limited budget is better spent trying both
-        polarities under the single most likely segmentation mode than trying
-        three segmentation modes on one binarization that may be inverted.
+        Preprocessing is the OUTER loop and segmentation mode the inner one, so
+        a small budget covers BOTH unknowns rather than exhausting itself on
+        one. Two things decide success independently: polarity (white-on-red vs
+        black-on-yellow) and whether the crop holds one text line or several.
+        Ordering by segmentation first meant a three-call budget spent every
+        call on single-line mode and never reached block mode -- which silently
+        lost the acuity on perfectly legible IMMEDIATE banners, because their
+        band also contained the ID line and the top of the barcode.
 
-        Each call shells out to the tesseract binary and costs ~100-200ms, so
-        the ordering here is the difference between a fast pipeline and one that
-        spends a minute on a nine-tag frame.
+        Each call shells out to the tesseract binary at ~100-200ms, so this
+        ordering is the difference between reading a tag and not.
         """
         if not self.available or crop.size == 0:
             return
-        variants = list(preprocess_variants(crop))
-        for psm in self.psm_modes:
-            for prepped in variants:
+        for prepped in preprocess_variants(crop):
+            for psm in self.psm_modes:
                 try:
                     t = self._pt.image_to_string(
                         prepped, lang=self.lang, config=self._cfg(psm)
