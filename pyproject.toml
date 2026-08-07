@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "triagevision"
+version = "0.1.0"
+description = "Read patient ID and acuity from photographs of triage tags."
+requires-python = ">=3.10"
+dependencies = [
+    "opencv-python-headless>=4.9",
+    "numpy>=1.24",
+    "zxing-cpp>=2.2",
+    "pytesseract>=0.3.10",
+]
+
+[project.optional-dependencies]
+service = ["fastapi>=0.110", "uvicorn[standard]>=0.27", "python-multipart>=0.0.9"]
+dev = ["pytest>=8.0", "pyflakes>=3.0"]
+
+[project.scripts]
+triagevision = "triagevision.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["triagevision*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

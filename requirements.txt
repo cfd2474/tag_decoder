@@ -1,0 +1,18 @@
+# Core detection. Pure pip wheels -- no system libraries needed.
+opencv-python-headless>=4.9
+numpy>=1.24
+zxing-cpp>=2.2
+
+# Banner-text OCR. The Python binding is pip-installable; the tesseract BINARY
+# is a system package and must be installed separately:
+#   Debian/Ubuntu   apt-get install tesseract-ocr
+#   RHEL/Fedora     dnf install tesseract
+#   macOS           brew install tesseract
+# Without it the detector still returns patient IDs, but acuity falls back to
+# the lighting-dependent color path and every result is flagged accordingly.
+pytesseract>=0.3.10
+
+# Optional HTTP wrapper (triagevision.service)
+# fastapi>=0.110
+# uvicorn[standard]>=0.27
+# python-multipart>=0.0.9
