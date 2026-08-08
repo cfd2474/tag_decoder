@@ -117,6 +117,12 @@ class TagDetection:
     barcode: BarcodeRead | None = None
     banner_text: str | None = None
     warnings: list[str] = field(default_factory=list)
+    # Where the patient ID came from: "barcode" (decoded symbol, exact),
+    # "ocr" (read off the printed line -- may contain character errors),
+    # or None when no ID was recovered.
+    id_source: str | None = None
+    # How the tag was located: "barcode" or "text".
+    found_by: str = "barcode"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -127,7 +133,41 @@ class TagDetection:
             "color": self.color.to_dict() if self.color else None,
             "barcode": self.barcode.to_dict() if self.barcode else None,
             "banner_text": self.banner_text,
+            "id_source": self.id_source,
+            "found_by": self.found_by,
             "warnings": self.warnings,
+        }
+
+
+@dataclass
+class ImageQuality:
+    """How readable this frame was, for deciding whether to ask for a retake.
+
+    Judged on OUTCOMES rather than on a picture-quality proxy. Measured across
+    real frames, generic sharpness metrics did not predict success: one sheet
+    read 15/15 after being blurred well below the sharpness of another that
+    read 7/15. What does predict it is what actually happened -- how many
+    located tags gave up a decodable barcode, and how many IDs anything
+    corroborated.
+    """
+
+    rating: str                    # "good" | "marginal" | "poor" | "empty"
+    barcode_decode_rate: float     # located tags whose barcode decoded
+    id_verified_rate: float        # tags whose ID was independently confirmed
+    tags_found: int
+    sharpness: float               # informational only; NOT the rating basis
+    retake_recommended: bool
+    advice: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "rating": self.rating,
+            "retake_recommended": self.retake_recommended,
+            "barcode_decode_rate": round(self.barcode_decode_rate, 3),
+            "id_verified_rate": round(self.id_verified_rate, 3),
+            "tags_found": self.tags_found,
+            "sharpness": round(self.sharpness, 1),
+            "advice": self.advice,
         }
 
 
@@ -139,6 +179,7 @@ class DetectionResult:
     image_size: tuple[int, int]
     elapsed_ms: float
     warnings: list[str] = field(default_factory=list)
+    quality: "ImageQuality | None" = None
 
     @property
     def tag_count(self) -> int:
@@ -163,6 +204,7 @@ class DetectionResult:
             "identified_count": self.identified_count,
             "image_size": {"width": self.image_size[0], "height": self.image_size[1]},
             "elapsed_ms": round(self.elapsed_ms, 2),
+            "image_quality": self.quality.to_dict() if self.quality else None,
             "warnings": self.warnings,
         }
 

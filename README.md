@@ -37,7 +37,7 @@ Three signals, ordered by how much they can be trusted:
 
 | Signal | Used for | Why it ranks there |
 |---|---|---|
-| **Banner text** | acuity | Invariant to lighting. Closed five-word vocabulary, so fuzzy matching is safe — a mangled read still lands on the right category. |
+| **Banner text** | acuity **and localization** | Invariant to lighting. Closed six-word vocabulary, so fuzzy matching is safe. Wide letter strokes also survive blur that destroys narrow bars, so the banner finds tags the decoder cannot. |
 | **Barcode** | patient ID | Open vocabulary, so it must be exact; a symbol either decodes or it does not. |
 | **Printed ID line** | cross-check | Catches a silent barcode misread, and stands in when the symbol is glare-blown. |
 | **Field colour** | *off by default* | Lighting-dependent. See below. |
@@ -167,6 +167,8 @@ the same shape the CLI and the HTTP endpoint emit.
         "quad": [[1139, 943], [1672, 943], [1673, 951], [1140, 951]]
       },
       "banner_text": "SDELAYED",
+      "id_source": "barcode",
+      "found_by": "barcode",
       "warnings": [
         "patient id came from a single Code 39 decode with no check character, and the printed id line could not be read to confirm it; treat the id as unverified"
       ]
@@ -176,6 +178,15 @@ the same shape the CLI and the HTTP endpoint emit.
   "identified_count": 7,
   "image_size": {"width": 3000, "height": 4000},
   "elapsed_ms": 3187.4,
+  "image_quality": {
+    "rating": "good",
+    "retake_recommended": false,
+    "barcode_decode_rate": 1.0,
+    "id_verified_rate": 0.87,
+    "tags_found": 7,
+    "sharpness": 617.7,
+    "advice": null
+  },
   "warnings": []
 }
 ```
@@ -189,6 +200,7 @@ the same shape the CLI and the HTTP endpoint emit.
 | `identified_count` | int | How many of those yielded a patient ID. Lower than `count` only when a tag was located but its ID could not be recovered. Also `result.identified_count`. |
 | `image_size` | object | `{"width": int, "height": int}` of the submitted image, in pixels. |
 | `elapsed_ms` | float | Wall-clock processing time for this image. |
+| `image_quality` | object | How readable the frame was, and whether to ask for a retake. See below. |
 | `warnings` | string[] | **Frame-level** notices, not tag-specific — currently only the missing-OCR-backend notice. Empty on a healthy run. Per-tag problems live on each tag. |
 
 ### Per tag — `tags[]`
@@ -201,6 +213,8 @@ the same shape the CLI and the HTTP endpoint emit.
 | `bbox` | `[x, y, w, h]` | Axis-aligned box in image pixels. This is the *upright* box around a possibly rotated tag, so it is larger than the tag itself when tilted. Use `barcode.quad` for true orientation. |
 | `color` | object \| `null` | `null` by default, since colour segmentation is off. Populated only with `use_color=True`. |
 | `barcode` | object \| `null` | `null` when no symbol decoded — in that case the ID, if any, came from OCR of the printed line and `warnings` will say so. |
+| `id_source` | string \| `null` | `"barcode"` (decoded symbol, exact) or `"ocr"` (read off the printed line — **may contain character errors**). `null` when no ID was recovered. |
+| `found_by` | string | `"barcode"`, `"text"` (located by its banner word) or `"color"`. |
 | `banner_text` | string \| `null` | **Raw, unparsed OCR output** of the banner, e.g. `"SDELAYED"`, `"EDEADY"`, `"V MINOR"`. Diagnostic only. `acuity` is the parsed result — do not parse this field yourself. |
 | `warnings` | string[] | Per-tag caveats. See below. |
 
@@ -249,6 +263,29 @@ Do not filter these out of your downstream feed — with a check-digit-less
 symbology they are the only signal distinguishing a corroborated ID from an
 uncorroborated one.
 
+### `image_quality` — for triggering a retake prompt
+
+| Field | Type | Description |
+|---|---|---|
+| `rating` | string | `good` \| `marginal` \| `poor` \| `empty` |
+| `retake_recommended` | bool | **The flag to act on.** |
+| `barcode_decode_rate` | float | located tags whose barcode decoded — the rating's basis |
+| `id_verified_rate` | float | tags whose ID was independently corroborated |
+| `tags_found` | int | same as `count` |
+| `sharpness` | float | informational only, **not** the rating basis |
+| `advice` | string \| `null` | operator-facing text, safe to show verbatim |
+
+Thresholds: `good` ≥ 0.90 barcode decode rate, `marginal` ≥ 0.60, `poor` below
+that, `empty` when no tags were found at all. When `retake_recommended` is true
+the advice string is also appended to the top-level `warnings`.
+
+**Rated on outcomes, not on a picture-quality proxy.** Generic sharpness metrics
+do not predict success here: one sheet still read 15/15 after being blurred well
+below the sharpness of another that read 7/15, and a directional-blur measurement
+found no difference between them either. What does predict readability is what
+actually happened — how many located tags gave up a decodable barcode. That is
+why `sharpness` is reported but not used for the rating.
+
 ### Python accessors
 
 | Expression | Returns |
@@ -256,6 +293,8 @@ uncorroborated one.
 | `result.tag_count` | `int` — line items, same as `count` |
 | `result.identified_count` | `int` — those with a patient ID |
 | `result.roster()` | `[{"patient_id": str, "acuity": str}]` — minimal payload, repeats preserved |
+| `result.quality.retake_recommended` | `bool` — ask the operator for a new photo |
+| `result.quality.rating` | `str` — `good`/`marginal`/`poor`/`empty` |
 | `result.tags[i].acuity.is_deceased` | `bool` — `True` for both `DEAD` and `MORGUE`, for callers that need to treat them alike |
 | `annotate(image, result)` | BGR image with boxes and labels drawn, for debugging |
 

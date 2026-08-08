@@ -36,10 +36,12 @@ from . import barcode as barcode_mod
 from . import color as color_mod
 from . import geometry as geo
 from . import layout
+from . import textfind
 from .config import DetectorConfig
 from .ocr import TextReader, TextVerdict, best_verdict, get_reader
 from .types import (
     Acuity,
+    ImageQuality,
     BarcodeRead,
     BBox,
     ColorRead,
@@ -89,6 +91,7 @@ class _Candidate:
     barcode: BarcodeRead | None = None
     from_color: bool = False
     warp_matrix: np.ndarray | None = None   # frame -> upright crop, set on warp
+    banner: "textfind.BannerHit | None" = None   # set when located by its word
 
 
 @dataclass
@@ -139,16 +142,145 @@ class TriageTagDetector:
         barcodes = barcode_mod.decode_barcodes(img, scales=self.cfg.barcode_scales)
 
         candidates = self._localize(img, seg_scale, regions, barcodes)
+
+        # Second localizer: find tags by their printed banner word. A soft photo
+        # can leave most barcodes undecodable while every banner stays legible,
+        # and with the barcode as sole localizer those patients vanish silently.
+        if self.cfg.use_text_localizer and self.reader.available:
+            candidates.extend(self._localize_by_text(img, candidates))
+        # Any barcode that decoded reveals this batch's ID shape, which is what
+        # lets OCR-recovered IDs be checked strictly. See textfind.shape_template.
+        self._id_template = textfind.shape_template([b.text for b in barcodes])
+
         tags = [t for t in self._read_all(img, candidates) if t]
         tags = [t for t in tags if t.confidence >= self.cfg.min_confidence]
         tags = self._merge_same_tag(tags)
         tags.sort(key=lambda t: (t.bbox.cy, t.bbox.cx))
+
+        quality = self._assess_quality(img, tags)
+        if quality.retake_recommended and quality.advice:
+            warnings.append(quality.advice)
 
         return DetectionResult(
             tags=tags,
             image_size=(w, h),
             elapsed_ms=(time.perf_counter() - started) * 1000.0,
             warnings=warnings,
+            quality=quality,
+        )
+
+    # ------------------------------------------------------------ text anchors
+
+    def _localize_by_text(
+        self, img: np.ndarray, existing: list[_Candidate]
+    ) -> list[_Candidate]:
+        """Add a candidate for every banner word not already covered by a tag."""
+        def uncovered(hs):
+            return [
+                h for h in hs
+                if not any(
+                    c.bbox.contains_point(h.bbox.cx, h.bbox.cy, pad=h.bbox.h * 0.5)
+                    for c in existing
+                )
+            ]
+
+        # Cheap probe first: one OCR call. On a sharp frame where the barcodes
+        # already found every tag it finds nothing new and we stop, which keeps
+        # the common case fast. Escalating only on EVIDENCE of a missed tag is
+        # different from "we found some, stop looking" -- the probe has to show
+        # a banner sitting outside every located tag before we spend more.
+        probe = textfind.find_banners(
+            img, self.cfg.text_keywords, scan_width=self.cfg.text_scan_width,
+            psms=self.cfg.text_scan_psms, workers=self.cfg.max_workers,
+            probe_only=True,
+        )
+        hits = probe
+        if uncovered(probe):
+            hits = textfind.find_banners(
+                img, self.cfg.text_keywords, scan_width=self.cfg.text_scan_width,
+                psms=self.cfg.text_scan_psms, workers=self.cfg.max_workers,
+            )
+        if not hits:
+            return []
+
+        extra: list[_Candidate] = []
+        for hit in hits:
+            # The banner sits inside the tag, so a hit whose centre falls in an
+            # already-located tag is that tag, not a new one.
+            if any(
+                c.bbox.contains_point(hit.bbox.cx, hit.bbox.cy, pad=hit.bbox.h * 0.5)
+                for c in existing
+            ):
+                continue
+            if any(
+                c.banner is not None and c.bbox.iou(hit.bbox) > 0.2 for c in extra
+            ):
+                continue
+            extra.append(
+                _Candidate(bbox=self._tag_box_from_banner(hit, img.shape[:2]), banner=hit)
+            )
+        return extra
+
+    @staticmethod
+    def _tag_box_from_banner(hit, shape: tuple[int, int]) -> BBox:
+        """Approximate tag bounds from its banner word.
+
+        The banner spans most of the tag's width and sits at the top, so the tag
+        extends downward roughly three word-heights to cover the ID line and the
+        barcode beneath it.
+        """
+        h_img, w_img = shape
+        b = hit.bbox
+        x0 = max(0, int(b.x - b.w * 0.22))
+        y0 = max(0, int(b.y - b.h * 0.70))
+        x1 = min(w_img, int(b.x + b.w * 1.22))
+        y1 = min(h_img, int(b.y + b.h * 3.10))
+        return BBox(x0, y0, max(1, x1 - x0), max(1, y1 - y0))
+
+    # ------------------------------------------------------------------ quality
+
+    def _assess_quality(self, img: np.ndarray, tags: list[TagDetection]):
+        """Rate how readable this frame was, so a caller can ask for a retake."""
+        n = len(tags)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+        sharp = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+        if n == 0:
+            return ImageQuality(
+                rating="empty", barcode_decode_rate=0.0, id_verified_rate=0.0,
+                tags_found=0, sharpness=sharp, retake_recommended=True,
+                advice="no triage tags were found in this image; retake with the "
+                       "tags filling more of the frame",
+            )
+
+        decoded = sum(1 for t in tags if t.barcode is not None)
+        verified = sum(
+            1 for t in tags
+            if not any("unverified" in w or "verify this tag" in w for w in t.warnings)
+            and t.patient_id
+        )
+        bc_rate, id_rate = decoded / n, verified / n
+
+        if bc_rate >= 0.90:
+            rating, retake, advice = "good", False, None
+        elif bc_rate >= 0.60:
+            rating, retake = "marginal", True
+            advice = (
+                f"image quality marginal: only {decoded} of {n} tags had a "
+                "readable barcode, so some patient IDs come from OCR and may "
+                "contain character errors; a sharper, closer photo is advised"
+            )
+        else:
+            rating, retake = "poor", True
+            advice = (
+                f"image quality poor: only {decoded} of {n} tags had a readable "
+                "barcode. Patient IDs are largely from OCR and tags may be "
+                "missing entirely. Retake: hold steady, fill the frame with the "
+                "tags, and avoid glare across the barcodes"
+            )
+        return ImageQuality(
+            rating=rating, barcode_decode_rate=bc_rate, id_verified_rate=id_rate,
+            tags_found=n, sharpness=sharp, retake_recommended=retake, advice=advice,
         )
 
     def detect_many(self, images) -> list[DetectionResult]:
@@ -248,6 +380,9 @@ class TriageTagDetector:
             return list(pool.map(lambda c: self._read(img, c), candidates))
 
     def _read(self, img: np.ndarray, cand: _Candidate) -> TagDetection | None:
+        if cand.banner is not None and cand.barcode is None:
+            return self._read_text_anchored(img, cand)
+
         warns: list[str] = []
 
         oriented = self._resolve_stack(img, cand)
@@ -280,6 +415,9 @@ class TriageTagDetector:
             barcode=cand.barcode,
             banner_text=verdict.text or None,
             warnings=warns,
+            id_source=("barcode" if (patient_id and cand.barcode) else
+                       ("ocr" if patient_id else None)),
+            found_by="barcode" if cand.barcode else "color",
         )
 
     def _upright_crop(self, img: np.ndarray, cand: _Candidate) -> np.ndarray:
@@ -312,6 +450,63 @@ class TriageTagDetector:
         if crop.size and crop.shape[0] > crop.shape[1]:
             crop = cv2.rotate(crop, cv2.ROTATE_90_CLOCKWISE)
         return crop
+
+    def _read_text_anchored(
+        self, img: np.ndarray, cand: _Candidate
+    ) -> TagDetection | None:
+        """Read a tag that only its banner word located.
+
+        The acuity is already known -- the word is what found the tag. What is
+        missing is the ID, which comes from the printed line directly beneath.
+        That ID is OCR off an open-vocabulary serial, exactly the case the
+        barcode normally protects against, so it is always marked and flagged.
+        """
+        hit = cand.banner
+        warns = [
+            "tag located by its printed banner, not a barcode -- the symbol "
+            "did not decode"
+        ]
+
+        band = textfind.id_band(hit, img.shape[:2])
+        template = getattr(self, "_id_template", None)
+        patient_id = textfind.read_id_text(
+            img, band, self.cfg.is_valid_patient_id, template=template
+        )
+
+        if patient_id:
+            warns.append(
+                f"patient id {patient_id!r} was read by OCR from the printed "
+                "line, with no barcode to confirm it; it may contain character "
+                "errors (0/O, 1/I, 5/S, 8/B) -- verify before use"
+            )
+        else:
+            warns.append(
+                "no barcode, and the printed id could not be read to a form "
+                "matching the other tags in this frame; patient id unknown"
+                if getattr(self, "_id_template", None)
+                else "no barcode and no readable printed id on this tag"
+            )
+            if not self.cfg.emit_unidentified_tags:
+                return None
+
+        # Capped well below a barcode-backed read: the acuity is solid (the word
+        # was matched with a clear margin) but the identity is not.
+        confidence = 0.55 if patient_id else 0.30
+        if hit.margin < 0.30:
+            confidence -= 0.05
+
+        return TagDetection(
+            patient_id=patient_id,
+            acuity=hit.acuity,
+            confidence=max(0.0, min(1.0, confidence)),
+            bbox=cand.bbox,
+            color=None,
+            barcode=None,
+            banner_text=hit.text,
+            warnings=warns,
+            id_source="ocr" if patient_id else None,
+            found_by="text",
+        )
 
     def _resolve_stack(
         self, img: np.ndarray, cand: _Candidate

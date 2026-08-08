@@ -458,12 +458,13 @@ def test_output_schema_matches_the_documented_fields():
     payload = DetectionResult([tag], (100, 200), 12.5).to_dict()
 
     assert set(payload) == {
-        "tags", "count", "identified_count", "image_size", "elapsed_ms", "warnings",
+        "tags", "count", "identified_count", "image_size", "elapsed_ms",
+        "image_quality", "warnings",
     }
     assert set(payload["image_size"]) == {"width", "height"}
     assert set(payload["tags"][0]) == {
-        "patient_id", "acuity", "confidence", "bbox",
-        "color", "barcode", "banner_text", "warnings",
+        "patient_id", "acuity", "confidence", "bbox", "color", "barcode",
+        "banner_text", "id_source", "found_by", "warnings",
     }
     assert set(payload["tags"][0]["barcode"]) == {"text", "format", "bbox", "quad"}
     assert set(payload["tags"][0]["color"]) == {
@@ -607,3 +608,87 @@ def test_sample_sheet_matches_ground_truth():
     result = TriageTagDetector().detect(os.environ["TRIAGEVISION_SAMPLE"])
     got = {t.patient_id: t.acuity.value for t in result.tags if t.patient_id}
     assert got == truth
+
+
+# ------------------------------------------------- text localizer / ID shapes
+
+
+def test_id_shape_signature():
+    from triagevision.textfind import id_shape
+
+    assert id_shape("EA1568511") == "AADDDDDDD"
+    assert id_shape("SN1050837") == "AADDDDDDD"
+
+
+def test_shape_template_needs_agreement():
+    """The template is only trusted when the frame's decoded IDs agree on it."""
+    from triagevision.textfind import shape_template
+
+    assert shape_template(["EA1568511", "SN1050837", "EA1568512"]) == "AADDDDDDD"
+    assert shape_template(["EA1568511"]) is None          # a single sample proves nothing
+    assert shape_template([]) is None
+
+
+def test_shape_template_rejects_fabricated_ocr_ids():
+    """The property that stops OCR inventing patients.
+
+    On a soft frame, OCR readily produces plausible-looking junk that satisfies
+    the permissive global ID pattern. Real garbage observed on a sample sheet:
+    'SSPGVEPQEB', 'HPT', '28S84A'. None share the batch's shape.
+    """
+    from triagevision.textfind import id_shape
+
+    template = "AADDDDDDD"
+    for junk in ("SSPGVEPQEB", "HPT", "28S84A", "56864"):
+        assert id_shape(junk) != template
+    for real in ("EA1568511", "SN1050837"):
+        assert id_shape(real) == template
+
+
+@pytest.mark.parametrize(
+    "word,w,h,ok",
+    [("IMMEDIATE", 674, 100, True),    # a single tag's banner
+     ("IMMEDIATE", 1635, 151, False),  # merged across three tags
+     ("MINOR", 493, 87, True),
+     ("DEAD", 665, 181, True)],
+)
+def test_word_box_plausibility_rejects_merged_boxes(word, w, h, ok):
+    """A box spanning several tags would put the ID band across tags and
+    fabricate an ID, so implausible aspect ratios are rejected.
+    """
+    from triagevision.textfind import _plausible_word_box
+
+    assert _plausible_word_box(word, w, h) is ok
+
+
+def test_quality_rating_tracks_barcode_success():
+    det = _detector()
+    img = np.zeros((100, 100, 3), np.uint8)
+
+    def tags_with(decoded, total):
+        out = []
+        for i in range(total):
+            t = _tag(f"EA{i}", i * 10, 0)
+            t.barcode = (
+                BarcodeRead(f"EA{i}", "Code 39", BBox(0, 0, 5, 5)) if i < decoded else None
+            )
+            out.append(t)
+        return out
+
+    assert det._assess_quality(img, tags_with(10, 10)).rating == "good"
+    assert det._assess_quality(img, tags_with(7, 10)).rating == "marginal"
+    assert det._assess_quality(img, tags_with(4, 10)).rating == "poor"
+    assert det._assess_quality(img, []).rating == "empty"
+
+
+def test_quality_recommends_retake_only_when_degraded():
+    det = _detector()
+    img = np.zeros((100, 100, 3), np.uint8)
+    good = [_tag("EA1", 0, 0)]
+    good[0].barcode = BarcodeRead("EA1", "Code 39", BBox(0, 0, 5, 5))
+    q = det._assess_quality(img, good)
+    assert q.retake_recommended is False and q.advice is None
+
+    poor = [_tag("EA1", 0, 0), _tag("EA2", 50, 0)]
+    q = det._assess_quality(img, poor)
+    assert q.retake_recommended is True and "retake" in q.advice.lower()

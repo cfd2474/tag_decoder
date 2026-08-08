@@ -136,6 +136,18 @@ class DetectorConfig:
     tag_aspect_prior: float = 2.25          # tag width / tag height
     barcode_offset_frac: float = 0.17       # symbol centre below tag centre, xH
 
+    # --- text localization (finds tags the barcode decoder cannot) ---
+    # Scan the frame for banner words and treat each as a tag anchor. This is
+    # what keeps a soft photo usable: wide letter strokes survive blur that
+    # destroys narrow bars, so a frame where most symbols fail to decode can
+    # still have every banner legible. Costs ~2-4s; turn off only if every
+    # frame is known to be sharp.
+    use_text_localizer: bool = True
+    # Width the frame is downscaled to for the banner scan. Banners are large,
+    # and the engine is far faster on fewer pixels.
+    text_scan_width: int = 1800
+    text_scan_psms: tuple[int, ...] = (6, 11)
+
     # --- text (primary acuity signal) ---
     text_keywords: dict[str, Acuity] = field(
         default_factory=lambda: dict(DEFAULT_TEXT_KEYWORDS)
