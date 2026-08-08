@@ -121,7 +121,7 @@ class DetectorConfig:
 
     # --- barcode ---
     # Try these upscale factors when the first decode pass finds nothing new.
-    barcode_scales: tuple[float, ...] = (1.0, 2.0, 3.0)
+    barcode_scales: tuple[float, ...] = (1.0, 1.5, 2.0)
     # Regex a decoded symbol must satisfy to be treated as a patient ID.
     # Default accepts most alphanumeric ID schemes; tighten for your own.
     patient_id_pattern: str = r"^[A-Za-z0-9][A-Za-z0-9._\-/]{2,63}$"

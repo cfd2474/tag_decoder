@@ -263,7 +263,7 @@ def _tile_pass(
 
 def decode_barcodes(
     image: np.ndarray,
-    scales: tuple[float, ...] = (1.0, 2.0, 3.0),
+    scales: tuple[float, ...] = (1.0, 1.5, 2.0),
     formats=DEFAULT_FORMATS,
     try_glare: bool = True,
     sweep_degrees: tuple[float, ...] = (15.0, 30.0, 45.0, 60.0, 75.0),
@@ -302,20 +302,23 @@ def decode_barcodes(
     for degrees in sweep_degrees:
         _merge(found, _rotate_pass(gray, degrees, formats, scale=sweep_scale))
 
-    # Upscaling a full-resolution phone frame is the most expensive thing here
-    # (a 2x pass on 12MP is a 48MP scan), and it only pays off for symbols that
-    # are small in pixel terms. Skip it when the frame is already large and the
-    # cheap passes found something; a per-tag crop retry covers the stragglers.
-    big_frame = gray.shape[0] * gray.shape[1] > 3_000_000
-    if big_frame and found:
-        return found
-
+    # Resampled passes. These run unconditionally, and every scale is tried.
+    #
+    # This used to return early on a large frame once anything had been found,
+    # on the theory that upscaling only helps symbols that are small in pixel
+    # terms. That was wrong in the way that matters: on a soft frame where the
+    # bars are marginal, resampling changes which symbols resolve regardless of
+    # their size, and the early return was skipping the pass that recovered
+    # them. Same failure as the old rotation-sweep and tile early exits -- "we
+    # already found some, stop looking" cannot be right when nothing tells us
+    # how many tags the frame holds.
+    #
+    # 1.5x earns its place separately from 2x: on one sheet each recovered a
+    # different symbol, and neither alone recovered both.
     for scale in scales:
         if scale == 1.0:
             continue
-        added = _merge(found, _decode_pass(gray, scale, formats))
-        if added == 0:
-            break
+        _merge(found, _decode_pass(gray, scale, formats))
 
     return found
 
