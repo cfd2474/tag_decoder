@@ -5,7 +5,11 @@ Two independent problems. **The second is the more serious and will not be fixed
 by upgrading.**
 
 Library: `https://github.com/cfd2474/tag_decoder`
-Required version: **`f8a126a`** or later.
+Required version: **0.6.0** or later.
+
+> **Read "New since 0.3.0" at the bottom first if you have already worked
+> through this document once.** The output contract gained several fields,
+> including one (`aborted`) that changes how a response must be handled.
 
 ---
 
@@ -263,3 +267,122 @@ Re-run the same image after upgrading. Expect:
 - Zero `UNKNOWN` acuities
 - Any tag that *is* `UNKNOWN` in future is visibly distinguishable in the output
 - `confidence` and `warnings` present on every tag
+
+---
+
+## New since 0.3.0 — additional contract the integration must handle
+
+Four releases added capability aimed squarely at poor field photographs. Each
+adds output the integration has to deal with; the first is not optional.
+
+### 1. A response can now be ABORTED — handle this first
+
+A readability check runs concurrently with decoding and stops a frame that is
+not worth processing. When it fires:
+
+```json
+{ "tags": [], "count": 0, "aborted": true,
+  "preflight": {"rating": "degraded", "symbols_found": 0, "words_found": 8, ...},
+  "image_quality": {"rating": "poor", "retake_recommended": true, "advice": "..."},
+  "warnings": ["image quality poor: ..."] }
+```
+
+**This is the retake trigger.** `aborted: true` means processing stopped
+deliberately and the operator should be asked for a new photo. It is not an
+error and not an empty scene — those are distinguishable via
+`preflight.rating`:
+
+| `preflight.rating` | Meaning |
+|---|---|
+| `ok` | a barcode decoded on the fast path; frame processed normally |
+| `degraded` | nothing decoded but banner words present; IDs would be OCR-only at best |
+| `unusable` | neither symbols nor words; nothing here to read |
+
+Aborting takes ~1.5 s instead of ~7 s spent producing a poor answer, and a
+cleaner retake is also a faster one.
+
+An integration that ignores `aborted` entirely still behaves safely — it sees
+zero tags rather than bad data — but it will not know to prompt for a retake,
+which is the whole point.
+
+Policy is a library-side config (`preflight_abort_on`): `"degraded"` (default),
+`"unusable"`, or `"never"`. The default trades data for a retake prompt: a frame
+that would have yielded acuities with OCR-derived IDs returns nothing instead.
+That is right when a better photo can be taken and **wrong if the scene is
+gone** — `"never"` keeps whatever can be read while still reporting the verdict.
+
+### 2. `image_quality` on every non-aborted response
+
+```json
+"image_quality": {"rating": "good", "retake_recommended": false,
+                  "barcode_decode_rate": 1.0, "id_verified_rate": 0.87,
+                  "tags_found": 7, "sharpness": 617.7, "advice": null}
+```
+
+`retake_recommended` is the flag to act on; `advice` is operator-facing text,
+safe to display verbatim. A frame can process successfully and still be rated
+`marginal` or `poor` — surface that.
+
+Note `sharpness` is reported but is **not** the basis of the rating and must not
+be used as one. Sharpness does not predict readability here: one sheet read
+15/15 after being blurred well below the sharpness of another that read 7/15.
+The rating is based on outcomes — how many located tags gave up a decodable
+barcode.
+
+### 3. Two new per-tag fields — `id_source` and `found_by`
+
+Tags can now be located by their printed banner word when the barcode fails to
+decode, with the patient ID read off the printed line. On a soft sheet this
+took results from 7 tags to 15.
+
+| Field | Values | Why it matters |
+|---|---|---|
+| `id_source` | `"barcode"` \| `"ocr"` \| `null` | `"ocr"` means the ID was **read as text and may contain character errors** (0/O, 1/I, 5/S, 8/B). `null` means no ID was recovered — the tag still has a valid acuity. |
+| `found_by` | `"barcode"` \| `"text"` \| `"color"` | How the tag was located. |
+
+**Do not treat an `ocr` ID as equivalent to a `barcode` one.** If the consuming
+system matches patients by ID, an OCR-derived ID should be treated as a
+candidate needing confirmation, not a key.
+
+A tag with `patient_id: null` but a valid `acuity` is a real, deliberate
+outcome, not a bug: the tag was found and its category read, but no ID could be
+recovered to a form matching the other tags in the frame. Reporting the acuity
+without an ID beats inventing a patient number.
+
+### 4. Fabricated IDs are actively suppressed
+
+OCR readily produces plausible-looking junk that satisfies the permissive ID
+pattern — real examples from a sample sheet: `SSPGVEPQEB`, `HPT`, `28S84A`.
+Because tags in one photo come from one batch, any barcode that decodes reveals
+that batch's ID shape, and OCR candidates must match it. That took fabricated
+IDs from six to zero on the frame in question.
+
+The consequence for the integration: **more `patient_id: null` entries, and
+fewer wrong ones.** That is the intended trade.
+
+### Updated verification snippet
+
+```bash
+docker exec <container> python -c "
+import triagevision, triagevision.ocr as o
+print('version     :', triagevision.__version__)      # expect 0.6.0+
+print('module path :', triagevision.__file__)
+print('MIN_MARGIN  :', getattr(o, 'MIN_MARGIN', 'ABSENT -> OLD'))
+print('preflight   :', __import__('triagevision.preflight', fromlist=['x']).PROBE_ANGLE)
+"
+```
+
+`preflight` importing at all proves the build is 0.5.0 or later.
+
+### Updated acceptance criteria
+
+Re-run the sheet with mixed IDs and orientations. Expect:
+
+- 15 line items, `SN1050837` → EXPECTANT, `EA1568623` → MINOR, zero `UNKNOWN`
+- `confidence`, `warnings`, `id_source`, `found_by` present on every tag
+- `image_quality` present, `rating: "good"`, `retake_recommended: false`
+- `aborted: false`
+
+Then re-run a deliberately soft photo. Expect `aborted: true`,
+`preflight.rating: "degraded"`, empty `tags`, and an `advice` string suitable
+for prompting a retake.

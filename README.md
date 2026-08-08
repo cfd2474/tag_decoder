@@ -486,6 +486,8 @@ changing for a different tag stock:
 | `tag_aspect_prior` | `2.25` | Tag width ÷ height. |
 | `barcode_offset_frac` | `0.17` | How far the symbol sits below tag centre. |
 | `require_text` | `False` | Never infer acuity from colour. |
+| `use_text_localizer` | `True` | Find tags by their banner word when the barcode fails. Turn off only if every frame is known to be sharp. |
+| `preflight_abort_on` | `"degraded"` | `"degraded"` / `"unusable"` / `"never"` — when to stop a frame and ask for a retake. |
 | `use_color` | `False` | Enable colour segmentation. |
 
 **On `patient_id_pattern`:** it is tempting to tighten this to your observed IDs,
