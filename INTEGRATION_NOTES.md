@@ -27,6 +27,90 @@ git log --oneline -1     # must show f8a126a or later
 python -m pytest tests/  # 84 passed expected
 ```
 
+### If the deployment is a Docker container, `git pull` on the host does nothing
+
+A rebuild is required, and there are three traps that make a rebuild silently
+no-op. All three have to be cleared.
+
+**1. The package version was not bumped until 0.3.0.** Every commit before that
+declared `version = "0.1.0"`, so `pip install --upgrade` saw 0.1.0 already
+installed and skipped the reinstall — no error, no change. From 0.3.0 onward the
+version moves with behaviour, so this stops being a trap. Check the *installed*
+version, not the repo:
+
+```bash
+docker exec <container> python -c "import triagevision; print(triagevision.__version__)"
+```
+
+Must print `0.3.0` or later. `0.1.0` means the old code is still installed.
+
+**2. Docker layer caching.** A line like
+
+```dockerfile
+RUN pip install git+https://github.com/cfd2474/tag_decoder.git
+```
+
+is byte-identical between builds, so Docker reuses the cached layer and never
+re-fetches, no matter what changed upstream. Pin the commit so the instruction
+itself changes when the code does:
+
+```dockerfile
+RUN pip install --no-cache-dir \
+    git+https://github.com/cfd2474/tag_decoder.git@f8a126a
+```
+
+**3. The running container is still on the old image.** Rebuilding does not
+restart anything:
+
+```bash
+docker compose build --no-cache
+docker compose up -d --force-recreate
+```
+
+### Confirm what is actually loaded, inside the container
+
+```bash
+docker exec <container> python -c "
+import triagevision, triagevision.ocr as o
+print('version     :', triagevision.__version__)      # expect 0.3.0+
+print('module path :', triagevision.__file__)
+print('MIN_MARGIN  :', getattr(o, 'MIN_MARGIN', 'ABSENT -> OLD'))   # expect 0.2
+print('PSM_MODES   :', o.TesseractReader.PSM_MODES)   # expect (7, 6)
+"
+```
+
+`module path` is the line that usually reveals the problem — it shows which copy
+is really being imported. A vendored copy inside the server repo, a bind-mounted
+volume, or a stale `__pycache__` will shadow the installed package.
+
+### Proof of whether the upgrade took effect
+
+The OCR path itself changed in `da39bc9`, so the upgraded library produces
+*different* `banner_text` for the same image. Same strings as the previous run
+means the old code is still executing.
+
+| Tag | Old code emits | 0.3.0 emits | 0.3.0 acuity |
+|---|---|---|---|
+| SN1050837 | `BE XEECTANTAY\nSN` | `EXPECTANT\nSE` | EXPECTANT |
+| EA1568623 | *(no text)* | `TMINOR\nTSE` | MINOR |
+| EA1568512 | *(no text)* | `JMMEDIATE\nEP\nLT` | IMMEDIATE |
+
+### If the server is a reimplementation, not this library
+
+The audit log carries fields this library never emits — `finalDecisionSource`,
+and colour counts (`reds`, `yellows`, `greens`, `expectants`, `blacks`). If the
+server is a port rather than a caller, upgrading changes nothing and the two
+fixes have to be ported. Both are small and self-contained:
+
+- **`f8a126a`** — judge a fuzzy keyword match on its **margin over the
+  runner-up** (>= 0.20), not on absolute similarity. `XEECTANTAY` scores 0.74
+  against EXPECTANT and 0.35 against everything else: unambiguous despite the
+  low score. Garbage scores poorly against the whole vocabulary roughly
+  equally, and that missing lead is what identifies it.
+- **`da39bc9`** — order OCR attempts preprocessing-major (not
+  segmentation-major), try page-segmentation modes 7 **and** 6, budget 4 calls.
+  Banner bands hold three text rows, which single-line mode cannot parse.
+
 ### Verification: replay of the log's own OCR strings under the fixed library
 
 All 15 `printedTextFound` values from the audit log, re-run through the current
