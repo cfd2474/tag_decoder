@@ -146,6 +146,11 @@ class DetectorConfig:
     # Width the frame is downscaled to for the banner scan. Banners are large,
     # and the engine is far faster on fewer pixels.
     text_scan_width: int = 1800
+    # The probe only has to prove a banner exists outside the located tags, so
+    # it runs much smaller. Measured across frames, 900px costs a steady ~440ms
+    # against 0.8-3.1s at 1800px, still finds uncovered banners on a soft frame,
+    # and still finds none on frames the barcodes already covered.
+    text_probe_width: int = 900
     text_scan_psms: tuple[int, ...] = (6, 11)
 
     # --- text (primary acuity signal) ---

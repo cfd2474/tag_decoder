@@ -221,7 +221,7 @@ class TriageTagDetector:
         # different from "we found some, stop looking" -- the probe has to show
         # a banner sitting outside every located tag before we spend more.
         probe = textfind.find_banners(
-            img, self.cfg.text_keywords, scan_width=self.cfg.text_scan_width,
+            img, self.cfg.text_keywords, scan_width=self.cfg.text_probe_width,
             psms=self.cfg.text_scan_psms, workers=self.cfg.max_workers,
             probe_only=True,
         )

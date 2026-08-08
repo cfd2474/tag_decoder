@@ -8,6 +8,7 @@ handles rotated/perspective-skewed symbols natively.
 from __future__ import annotations
 
 import os
+from typing import Any
 from concurrent.futures import ThreadPoolExecutor
 
 import cv2
@@ -276,6 +277,68 @@ def decode_barcodes(
     symbols or nothing has been found yet, so clean frames stay fast and only
     difficult ones pay for the extra passes.
     """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+
+    # Every pass is an independent read of the same pixels, so they all run
+    # concurrently and the results are merged afterwards. Sequentially these
+    # cost ~2.8s on a 12MP frame; in parallel the stage takes about as long as
+    # its slowest member. Nothing is skipped -- this buys latency without
+    # trading away any recall, which the early-exit heuristics removed earlier
+    # in this file's history did not.
+    #
+    # Merging stays single-threaded and in a fixed pass order, so the output is
+    # deterministic regardless of which pass finishes first.
+    tasks: list[tuple[str, Any]] = [("native", lambda: _decode_pass(gray, 1.0, formats))]
+
+    if try_glare:
+        # Glossy laminated tags under a scene light blow out a band across the
+        # symbol; flattening the illumination recovers those.
+        tasks.append(
+            ("glare",
+             lambda: _decode_pass(geometry.suppress_glare(gray), 1.0, formats))
+        )
+
+    # Close the decoder's angular blind bands. No early exit: the frame gives no
+    # way to know how many tags it holds.
+    sweep_scale = 0.5 if gray.shape[0] * gray.shape[1] > 3_000_000 else 1.0
+    for degrees in sweep_degrees:
+        tasks.append(
+            (f"rot{degrees}",
+             lambda d=degrees: _rotate_pass(gray, d, formats, scale=sweep_scale))
+        )
+
+    # A whole-frame scan silently skips symbols on a crowded sheet, so always
+    # re-scan in tiles, at two scales.
+    for grid, overlap in tile_plan or ():
+        tasks.append(
+            (f"tile{grid}",
+             lambda g=grid, o=overlap: _tile_pass(gray, formats, grid=g, overlap=o))
+        )
+
+    # Resampling changes which marginal symbols resolve, independently of size.
+    for scale in scales:
+        if scale != 1.0:
+            tasks.append((f"x{scale}", lambda s=scale: _decode_pass(gray, s, formats)))
+
+    workers = min(len(tasks), max(2, (os.cpu_count() or 4)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        batches = list(pool.map(lambda t: t[1](), tasks))
+
+    found: list[BarcodeRead] = []
+    for batch in batches:
+        _merge(found, batch)
+    return found
+
+
+def _decode_barcodes_serial(
+    image: np.ndarray,
+    scales=(1.0, 1.5, 2.0),
+    formats=None,
+    try_glare: bool = True,
+    sweep_degrees=(15.0, 30.0, 45.0, 60.0, 75.0),
+    tile_plan=None,
+) -> list[BarcodeRead]:
+    """Kept for reference/debugging: the same passes, run one after another."""
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
 
     found: list[BarcodeRead] = []

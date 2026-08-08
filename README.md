@@ -441,15 +441,21 @@ Measured on 12 MP phone photos, laptop CPU, all correct:
 
 | Frame | Tags | Time |
 |---|---|---|
-| single tag | 1 | 2.5 s |
-| five tags | 5 | 3.8 s |
-| nine tags | 9 | 4.5 s |
-| fifteen tags | 15 | 5.9 s |
-| sixteen tags | 16 | 4.7 s |
+| single tag | 1 | 2.8 s |
+| five tags | 5 | 4.0 s |
+| nine tags | 9 | 5.0 s |
+| fifteen tags | 15 | 6.1 s |
+| sixteen tags | 16 | 5.4 s |
+| **unusable frame — aborted** | — | **1.5 s** |
+| **blank frame — aborted** | — | **0.7 s** |
 
-Roughly 2.5 s of fixed cost (whole-frame decode, glare pass, two tile scales,
-rotation sweep) plus ~0.2 s per tag. Both the tile decodes and the per-tag
-reading run in parallel (`max_workers`).
+Perceived latency is a product requirement here, not just an engineering one:
+an operator who waits too long concludes the system has stalled. Two things
+serve that. The preflight rejects a doomed frame in ~1.5 s rather than spending
+7 s to produce a poor answer — and a cleaner retake is also a *faster* one. And
+every independent pass runs concurrently: the barcode stage alone went from
+2.8 s to 1.3 s by running its passes in parallel rather than in sequence, with
+no reduction in what they find.
 
 Cost is dominated by OCR, because `pytesseract` shells out to the tesseract
 binary once per call. If you need more throughput, in order of payoff:
