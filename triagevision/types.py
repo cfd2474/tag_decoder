@@ -180,6 +180,10 @@ class DetectionResult:
     elapsed_ms: float
     warnings: list[str] = field(default_factory=list)
     quality: "ImageQuality | None" = None
+    # Set when the preflight check stopped processing. `tags` is empty and the
+    # frame should be retaken; nothing was missed by the abort.
+    aborted: bool = False
+    preflight: Any = None
 
     @property
     def tag_count(self) -> int:
@@ -205,6 +209,8 @@ class DetectionResult:
             "image_size": {"width": self.image_size[0], "height": self.image_size[1]},
             "elapsed_ms": round(self.elapsed_ms, 2),
             "image_quality": self.quality.to_dict() if self.quality else None,
+            "preflight": self.preflight.to_dict() if self.preflight else None,
+            "aborted": self.aborted,
             "warnings": self.warnings,
         }
 

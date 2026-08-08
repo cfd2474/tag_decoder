@@ -263,6 +263,49 @@ Do not filter these out of your downstream feed — with a check-digit-less
 symbology they are the only signal distinguishing a corroborated ID from an
 uncorroborated one.
 
+### `preflight` — fast abort on an unusable photo
+
+A readability check runs **concurrently** with the barcode stage and can stop a
+doomed frame before the expensive per-tag OCR begins. It costs ~250-300 ms while
+decoding takes seconds, so a good frame is never delayed by it.
+
+```json
+"preflight": {"rating": "degraded", "symbols_found": 0, "words_found": 8,
+              "sharpness": 754.2, "elapsed_ms": 1186.0, "advice": "image quality poor: ..."},
+"aborted": true
+```
+
+| `rating` | Meaning |
+|---|---|
+| `ok` | a barcode decoded on the fast path; the frame is workable |
+| `degraded` | nothing decoded, but banner words are present — IDs would be OCR-only at best and tags may be missing |
+| `unusable` | neither symbols nor words; there is nothing here to read |
+
+When it aborts, `tags` is empty, `aborted` is `true`, and `image_quality
+.retake_recommended` is set — so a consumer that ignores `aborted` still sees
+zero tags rather than bad data.
+
+Measured: good frames `ok` in 240–300 ms and processed normally; a soft frame
+aborted in **2.9 s** instead of 9.1 s; a blank frame aborted in **0.7 s**.
+
+**A diagonal frame is not an unreadable one.** A sheet lying at 37° decodes
+nothing on a straight pass, so a naive "no barcodes → abort" would reject a
+frame the full pipeline reads fine. One cheap rotated probe at 45° separates
+the two; rotated 37° and 90° frames both rate `ok`.
+
+Policy is `DetectorConfig(preflight_abort_on=...)`:
+
+| Value | Aborts on |
+|---|---|
+| `"degraded"` *(default)* | `degraded` and `unusable` |
+| `"unusable"` | only `unusable` |
+| `"never"` | nothing — reports the verdict and always processes |
+
+The default trades data for a retake prompt: a frame that would have yielded
+acuities with OCR-derived IDs returns nothing instead. That is right when a
+better photo can simply be taken, and **wrong if the scene is gone** — set
+`"never"` to keep whatever can be read.
+
 ### `image_quality` — for triggering a retake prompt
 
 | Field | Type | Description |

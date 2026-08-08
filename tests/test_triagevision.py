@@ -459,7 +459,7 @@ def test_output_schema_matches_the_documented_fields():
 
     assert set(payload) == {
         "tags", "count", "identified_count", "image_size", "elapsed_ms",
-        "image_quality", "warnings",
+        "image_quality", "preflight", "aborted", "warnings",
     }
     assert set(payload["image_size"]) == {"width", "height"}
     assert set(payload["tags"][0]) == {
@@ -692,3 +692,65 @@ def test_quality_recommends_retake_only_when_degraded():
     poor = [_tag("EA1", 0, 0), _tag("EA2", 50, 0)]
     q = det._assess_quality(img, poor)
     assert q.retake_recommended is True and "retake" in q.advice.lower()
+
+
+# ----------------------------------------------------------------- preflight
+
+
+def _pre(rating):
+    from triagevision.preflight import Preflight
+
+    return Preflight(rating=rating, symbols_found=0, words_found=0,
+                     sharpness=0.0, elapsed_ms=0.0)
+
+
+@pytest.mark.parametrize(
+    "rating,policy,expect",
+    [("ok", "degraded", False), ("ok", "unusable", False), ("ok", "never", False),
+     ("degraded", "degraded", True), ("degraded", "unusable", False),
+     ("degraded", "never", False),
+     ("unusable", "degraded", True), ("unusable", "unusable", True),
+     ("unusable", "never", False)],
+)
+def test_preflight_abort_policy(rating, policy, expect):
+    assert _pre(rating).should_abort(policy) is expect
+
+
+def test_preflight_never_aborts_a_readable_frame():
+    """A frame whose symbols decode is workable regardless of any blur metric."""
+    assert _pre("ok").usable
+    for policy in ("degraded", "unusable", "never"):
+        assert _pre("ok").should_abort(policy) is False
+
+
+def test_preflight_on_blank_frame_is_unusable():
+    """No symbols and no words: nothing here to read."""
+    from triagevision.preflight import check
+
+    result = check(np.full((600, 800, 3), 140, np.uint8), DEFAULT_TEXT_KEYWORDS)
+    assert result.rating == "unusable"
+    assert result.should_abort("degraded") and result.should_abort("unusable")
+    assert result.advice and "retake" in result.advice.lower()
+
+
+def test_aborted_result_is_empty_and_flagged():
+    """An aborted frame must be unmistakable: no tags, aborted set, retake
+    recommended. A consumer that ignores `aborted` still sees zero tags.
+    """
+    det = TriageTagDetector(
+        DetectorConfig(ocr_backend="none", preflight_abort_on="unusable")
+    )
+    r = det.detect(np.full((600, 800, 3), 140, np.uint8))
+    assert r.aborted is True
+    assert r.tags == [] and r.tag_count == 0
+    assert r.quality.retake_recommended is True
+    payload = r.to_dict()
+    assert payload["aborted"] is True and payload["preflight"]["rating"] == "unusable"
+
+
+def test_preflight_can_be_disabled():
+    det = TriageTagDetector(
+        DetectorConfig(ocr_backend="none", preflight_enabled=False)
+    )
+    r = det.detect(np.full((400, 500, 3), 140, np.uint8))
+    assert r.aborted is False and r.preflight is None

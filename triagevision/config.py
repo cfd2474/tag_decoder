@@ -162,6 +162,21 @@ class DetectorConfig:
     # than no category.
     require_text: bool = False
 
+    # --- preflight readability check ---
+    # Runs concurrently with the barcode stage and can stop a doomed frame
+    # before the expensive per-tag OCR begins. A good frame is never delayed:
+    # the check finishes in ~250ms while the barcode stage takes seconds.
+    preflight_enabled: bool = True
+    # When to abort: "degraded" (nothing decoded on the fast path -- IDs would
+    # be OCR-only at best), "unusable" (no symbols AND no words), or "never"
+    # (report the verdict but always process).
+    #
+    # "degraded" trades data for a retake prompt: a frame that would have
+    # yielded acuities with OCR-derived IDs returns nothing instead. That is
+    # the right default when a better photo can simply be taken, and the wrong
+    # one if the scene is gone. Set "never" to always keep what can be read.
+    preflight_abort_on: str = "degraded"
+
     # --- performance ---
     # Threads used to read tags within one frame. 0 = one per CPU, 1 = serial.
     # Set to 1 if you are already running several detections concurrently, so

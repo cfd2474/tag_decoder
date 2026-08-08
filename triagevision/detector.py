@@ -36,6 +36,7 @@ from . import barcode as barcode_mod
 from . import color as color_mod
 from . import geometry as geo
 from . import layout
+from . import preflight as preflight_mod
 from . import textfind
 from .config import DetectorConfig
 from .ocr import TextReader, TextVerdict, best_verdict, get_reader
@@ -134,12 +135,41 @@ class TriageTagDetector:
                 "color, which is lighting-dependent; install tesseract"
             )
 
+        # Readability check, started first and left to run while the barcode
+        # stage works. It finishes in ~250ms against seconds for decoding, so a
+        # good frame is never delayed -- only a doomed one is stopped, and by
+        # then the expensive per-tag OCR has not begun.
+        pre_future = None
+        if self.cfg.preflight_enabled:
+            pre_pool = ThreadPoolExecutor(max_workers=1)
+            pre_future = pre_pool.submit(
+                preflight_mod.check, img, self.cfg.text_keywords,
+            )
+
         if self.cfg.use_color:
             seg_img, seg_scale = self._downscale_for_segmentation(img)
             regions = color_mod.find_tag_regions(seg_img, self.cfg)
         else:
             regions, seg_scale = [], 1.0
         barcodes = barcode_mod.decode_barcodes(img, scales=self.cfg.barcode_scales)
+
+        pre = None
+        if pre_future is not None:
+            pre = pre_future.result()
+            pre_pool.shutdown(wait=False)
+            if pre.should_abort(self.cfg.preflight_abort_on):
+                return DetectionResult(
+                    tags=[], image_size=(w, h),
+                    elapsed_ms=(time.perf_counter() - started) * 1000.0,
+                    warnings=[pre.advice] if pre.advice else [],
+                    quality=ImageQuality(
+                        rating="poor" if pre.rating == "degraded" else "empty",
+                        barcode_decode_rate=0.0, id_verified_rate=0.0,
+                        tags_found=0, sharpness=pre.sharpness,
+                        retake_recommended=True, advice=pre.advice,
+                    ),
+                    aborted=True, preflight=pre,
+                )
 
         candidates = self._localize(img, seg_scale, regions, barcodes)
 
@@ -167,6 +197,7 @@ class TriageTagDetector:
             elapsed_ms=(time.perf_counter() - started) * 1000.0,
             warnings=warnings,
             quality=quality,
+            preflight=pre,
         )
 
     # ------------------------------------------------------------ text anchors
